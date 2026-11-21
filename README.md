@@ -21,11 +21,11 @@ dependency on Jaws: names, accounts and prefixes are plain inputs.
 
 | Submodule | What it is | Applied in |
 |---|---|---|
-| [`billing-bucket`](modules/billing-bucket) | The bucket every billing source delivers into. Raw deliveries are never deleted; the normalized layer is rebuildable from them | the account that runs the platform |
-| [`aws-billing-export`](modules/aws-billing-export) | The FOCUS 1.2 daily AWS Data Export, in Parquet, delivered to that bucket, across accounts if needed | the account whose bill it exports: the payer, for every account of an organization |
+| [`billing-bucket`](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/tree/main/modules/billing-bucket) | The bucket every billing source delivers into. Raw deliveries are never deleted; the normalized layer is rebuildable from them | the account that runs the platform |
+| [`aws-billing-export`](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/tree/main/modules/aws-billing-export) | The FOCUS 1.2 daily AWS Data Export, in Parquet, delivered to that bucket, across accounts if needed | the account whose bill it exports: the payer, for every account of an organization |
 
 The root module creates nothing yet. A later release makes it the all-in-one
-composition. [`examples/organization-billing`](examples/organization-billing)
+composition. [`examples/organization-billing`](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/tree/main/examples/organization-billing)
 shows the two submodules wired together across a payer and a platform
 account.
 
