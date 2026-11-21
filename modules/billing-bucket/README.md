@@ -21,17 +21,25 @@ from the caller's provider `default_tags`.
 
 ## Protections
 
-- **Nothing under `raw/` can be deleted.** With `protect_raw` on (the
-  default), the policy denies `s3:DeleteObject` and `s3:DeleteObjectVersion`
-  on `raw/*` to every principal. Versioning keeps every older version of an
-  overwritten object, and no lifecycle rule touches `raw/`.
+- **No delete call can remove anything under `raw/`.** With `protect_raw` on
+  (the default), the policy denies `s3:DeleteObject` and
+  `s3:DeleteObjectVersion` on `raw/*` to every principal. Versioning keeps
+  every older version of an overwritten object, and no lifecycle rule
+  touches `raw/`.
+- **The bucket refuses destroy and replacement.** It carries
+  `lifecycle { prevent_destroy = true }`, so a plan that would destroy or
+  replace it (a new `bucket_name`, or removing the module) fails before
+  anything is changed. Without it, Terraform would remove the policy,
+  versioning and public access block first, and only then fail on the
+  non-empty bucket.
 - **Only the normalized layer's old versions expire**, after
   `normalized_noncurrent_days`. The normalizer overwrites its objects in
   place, so the old versions are just an undo window.
 - **TLS only.** Requests without TLS are denied.
 - **No Object Lock.** Its compliance mode cannot be undone, even by the
-  account's root. Lifting the delete deny takes an admin changing the policy
-  on purpose.
+  account's root. What is left is deliberate admin action outside this
+  module: changing the bucket policy, adding a lifecycle rule (expirations
+  are not subject to the policy's deny), or suspending versioning.
 
 ## Order of operations
 
@@ -43,13 +51,26 @@ from the caller's provider `default_tags`.
    module's `aws_export_prefix` and, when the export lives in another
    account, `bucket_owner_account_id` set to this bucket's account.
 3. Once the first deliveries have landed under the right prefixes, set
-   `protect_raw = true` if you started with it off. From then on nothing
-   under `raw/` can be deleted, and `terraform destroy` fails on this bucket
-   by design.
+   `protect_raw = true` if you started with it off. From then on no delete
+   call can remove anything under `raw/`.
 
 AWS warns that editing the bucket policy or changing the bucket's owner after
-an export exists can stop deliveries. This module only ever changes the
-delete deny; the delivery statement stays as it was.
+an export exists can stop deliveries. Toggling `protect_raw` leaves the
+delivery statement as it was; changing `aws_export_source_account_ids`
+rewrites it, so check the next delivery after such a change.
+
+To stop managing the bucket without deleting it, replace the module call
+with a `removed` block; the bucket and its data stay in the account:
+
+```hcl
+removed {
+  from = module.billing_bucket
+
+  lifecycle {
+    destroy = false
+  }
+}
+```
 
 ## Usage
 
@@ -100,7 +121,7 @@ No modules.
 | bucket\_name | The bucket's name. Every billing source delivers under `raw/` and the<br/>normalizer writes under `normalized/` (see the README). Choose it before the<br/>first export is created: the export and the policies name it, and AWS stops<br/>delivering if the bucket changes. | `string` | n/a | yes |
 | aws\_export\_source\_account\_ids | The AWS accounts whose Data Exports may deliver into this bucket, as 12-digit<br/>strings: the payer (management) account for organization-wide data, or any<br/>account that exports its own bill. AWS Data Exports may then put objects for<br/>those accounts' exports only. Empty: no export can deliver. | `list(string)` | `[]` | no |
 | normalized\_noncurrent\_days | Days a replaced version of a `normalized/` object is kept before it expires.<br/>The normalized layer is rebuilt from `raw/` and overwritten in place, so its<br/>old versions are only an undo window. Raw data never expires. | `number` | `30` | no |
-| protect\_raw | Deny deleting any object or object version under `raw/`, to every principal,<br/>so a delivered bill can never be lost. Switch it on once the first<br/>deliveries have been checked to land under the right prefixes: until then a<br/>misplaced first object can still be cleaned up. While it is on, the bucket<br/>cannot be destroyed (by design); an admin must change the policy first. | `bool` | `true` | no |
+| protect\_raw | Deny the delete calls (`s3:DeleteObject`, `s3:DeleteObjectVersion`) on<br/>anything under `raw/`, to every principal, so a delivered bill cannot be<br/>deleted. Switch it on once the first deliveries have been checked to land<br/>under the right prefixes: until then a misplaced first object can still be<br/>cleaned up. The bucket itself always refuses destroy and replacement,<br/>whatever this is set to. | `bool` | `true` | no |
 
 ## Outputs
 

@@ -31,11 +31,12 @@ variable "aws_export_source_account_ids" {
 
 variable "protect_raw" {
   description = <<-EOT
-    Deny deleting any object or object version under `raw/`, to every principal,
-    so a delivered bill can never be lost. Switch it on once the first
-    deliveries have been checked to land under the right prefixes: until then a
-    misplaced first object can still be cleaned up. While it is on, the bucket
-    cannot be destroyed (by design); an admin must change the policy first.
+    Deny the delete calls (`s3:DeleteObject`, `s3:DeleteObjectVersion`) on
+    anything under `raw/`, to every principal, so a delivered bill cannot be
+    deleted. Switch it on once the first deliveries have been checked to land
+    under the right prefixes: until then a misplaced first object can still be
+    cleaned up. The bucket itself always refuses destroy and replacement,
+    whatever this is set to.
   EOT
   type        = bool
   default     = true

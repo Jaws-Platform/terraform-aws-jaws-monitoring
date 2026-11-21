@@ -62,6 +62,16 @@ resource "aws_s3_bucket" "this" {
     Name      = var.bucket_name
     Component = "billing"
   }
+
+  # Destroying or replacing the bucket (a new bucket_name, or removing the
+  # module) is refused at plan. Without this, Terraform would first destroy
+  # the policy, versioning, public access block and ownership controls, and
+  # only then fail on the non-empty bucket, leaving the data unprotected.
+  # To stop managing the bucket on purpose, use a `removed` block with
+  # `lifecycle { destroy = false }` (see the README).
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_s3_bucket_ownership_controls" "this" {
