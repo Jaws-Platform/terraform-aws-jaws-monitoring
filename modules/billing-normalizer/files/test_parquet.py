@@ -1,6 +1,8 @@
 import unittest
 from datetime import UTC, datetime
 
+import pyarrow as pa
+
 from normalizer.parquet import read_rows, write_rows
 from normalizer.schema import focus_schema, runs_schema
 
@@ -39,6 +41,11 @@ class ParquetTest(unittest.TestCase):
         names = focus_schema(["Project", "Component"]).names
         self.assertEqual(names[:3], ["ProviderName", "BillingAccountId", "BillingAccountName"])
         self.assertEqual(names[-4:], ["x_Project", "x_Component", "x_Serverless", "x_Source"])
+
+    def test_read_rows_reads_only_the_requested_columns_that_exist(self):
+        schema = pa.schema([("a", pa.string()), ("b", pa.float64()), ("c", pa.map_(pa.string(), pa.string()))])
+        body = write_rows([{"a": "x", "b": 1.0, "c": {"k": "v"}}], schema)
+        self.assertEqual(read_rows(body, columns=["a", "c", "missing"]), [{"a": "x", "c": {"k": "v"}}])
 
     def test_runs_schema_has_the_event_columns(self):
         self.assertEqual(runs_schema().names[:4], ["run_key", "tags", "event", "at"])

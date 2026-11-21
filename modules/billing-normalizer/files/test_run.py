@@ -66,24 +66,37 @@ def add_aws_delivery(store, execution_id, cost=1.5, last_modified=None):
               last_modified=last_modified)
 
 
-def seeded_store():
-    store = FakeStore()
-    add_aws_delivery(store, "e1")
-    store.add(f"{DATABRICKS}/table=usage/billing_period=2026-11/run=20261121T060000Z/part-0.parquet", parquet_bytes([{
-        "account_id": "acct-1", "workspace_id": "111", "sku_name": "JOBS_SKU", "cloud": "AWS",
+def add_usage(store, sku="JOBS_SKU", period="2026-11"):
+    store.add(f"{DATABRICKS}/table=usage/billing_period={period}/run=20261121T060000Z/part-0.parquet", parquet_bytes([{
+        "account_id": "acct-1", "workspace_id": "111", "sku_name": sku, "cloud": "AWS",
         "usage_end_time": datetime(2026, 11, 20, 6, tzinfo=UTC), "usage_date": date(2026, 11, 20),
         "custom_tags": [("Project", "braveheart")], "usage_unit": "DBU", "usage_quantity": Decimal("2"),
         "record_type": "ORIGINAL", "billing_origin_product": "JOBS", "product_features": {"is_serverless": True},
     }], USAGE_FIXTURE))
+
+
+def add_record(store, date_folder, name, body):
+    store.add(f"{RUNS}/project=braveheart-trainer/date={date_folder}/{name}.json",
+              body if isinstance(body, bytes) else json.dumps(body).encode())
+
+
+def started(run_id, at="2026-11-20T10:00:00Z", **changes):
+    record = {"schema": "runs-1", "event": "started", "at": at,
+              "tags": {"RunId": run_id, "TaskId": "net"}, "project": "braveheart-trainer"}
+    record.update(changes)
+    return record
+
+
+def seeded_store():
+    store = FakeStore()
+    add_aws_delivery(store, "e1")
+    add_usage(store)
     store.add(f"{DATABRICKS}/table=list_prices/run=20261121T060000Z/part-0.parquet", parquet_bytes([{
         "price_start_time": datetime(2026, 1, 1, tzinfo=UTC), "price_end_time": None, "sku_name": "JOBS_SKU",
         "cloud": "AWS", "currency_code": "USD", "usage_unit": "DBU",
         "pricing": {"default": Decimal("0.5"), "effective_list": {"default": Decimal("0.5")}},
     }], PRICES_FIXTURE))
-    store.add(f"{RUNS}/project=braveheart-trainer/date=2026-11-20/123-1.net.started.json", json.dumps({
-        "schema": "runs-1", "event": "started", "at": "2026-11-20T10:00:00Z",
-        "tags": {"RunId": "123-1", "TaskId": "net"}, "project": "braveheart-trainer",
-    }).encode())
+    add_record(store, "2026-11-20", "123-1.net.started", started("123-1"))
     return store
 
 
@@ -93,10 +106,11 @@ class RunTest(unittest.TestCase):
 
         record = run(store, CONFIG, NOW)
 
-        self.assertEqual(store.puts, [AWS_KEY, DATABRICKS_KEY, RUNS_KEY, *RECORDS])
+        # Runs first: the small, time-critical event table is written before the cost tables.
+        self.assertEqual(store.puts, [RUNS_KEY, AWS_KEY, DATABRICKS_KEY, *RECORDS])
         self.assertEqual(record["status"], "ok")
         self.assertEqual([(o["key"], o["rebuilt"]) for o in record["outputs"]],
-                         [(AWS_KEY, True), (DATABRICKS_KEY, True), (RUNS_KEY, True)])
+                         [(RUNS_KEY, True), (AWS_KEY, True), (DATABRICKS_KEY, True)])
         for key in (AWS_KEY, DATABRICKS_KEY, RUNS_KEY):
             self.assertTrue(store.metadata(key)["source-signature"])
         self.assertEqual(json.loads(store.get(RECORDS[1])), record)
@@ -104,7 +118,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual((aws_row["BilledCost"], aws_row["x_Project"]), (1.5, "braveheart"))
         [databricks_row] = read_rows(store.get(DATABRICKS_KEY))
         self.assertAlmostEqual(databricks_row["BilledCost"], 1.0)
-        self.assertEqual(record["outputs"][1]["billed_cost"], 1.0)
+        self.assertEqual(record["outputs"][2]["billed_cost"], 1.0)
 
     def test_a_second_run_without_new_deliveries_rewrites_nothing(self):
         store = seeded_store()
@@ -127,6 +141,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(store.puts[0], AWS_KEY)
         self.assertNotIn(DATABRICKS_KEY, store.puts)
         self.assertNotIn(RUNS_KEY, store.puts)
+        self.assertNotIn(RUNS_KEY, store.puts)
         self.assertEqual(read_rows(store.get(AWS_KEY))[0]["BilledCost"], 2.0)
 
     def test_a_mapper_version_change_rebuilds_everything(self):
@@ -137,7 +152,7 @@ class RunTest(unittest.TestCase):
         with mock.patch("normalizer.schema.MAPPER_VERSION", "2"):
             run(store, CONFIG, NOW + timedelta(hours=1))
 
-        self.assertEqual(store.puts[:3], [AWS_KEY, DATABRICKS_KEY, RUNS_KEY])
+        self.assertEqual(store.puts[:3], [RUNS_KEY, AWS_KEY, DATABRICKS_KEY])
 
     def test_empty_sources_write_only_a_run_record(self):
         store = FakeStore()
@@ -160,7 +175,66 @@ class RunTest(unittest.TestCase):
         latest = json.loads(store.get("normalized/_runs/latest.json"))
         self.assertEqual(latest["status"], "error")
         self.assertEqual(len(latest["errors"]), 1)
-        self.assertTrue(latest["errors"][0].startswith("databricks: "))
+        self.assertTrue(latest["errors"][0].startswith("databricks 2026-11: "))
+
+    def test_malformed_run_records_are_skipped_and_the_rest_written(self):
+        store = seeded_store()
+        add_record(store, "2026-10-05", "bad-list", b"[]")
+        add_record(store, "2026-10-05", "bad-tags", started("9-1", at="2026-10-05T10:00:00Z", tags=[]))
+        add_record(store, "2026-10-05", "bad-int", started("9-2", at="2026-10-05T10:00:00Z",
+                                                          instance={"accelerators": 2 ** 40}))
+        add_record(store, "2026-10-05", "good", started("9-3", at="2026-10-05T10:00:00Z"))
+
+        record = run(store, CONFIG, NOW)
+
+        october = "normalized/schema=runs-1/event_month=2026-10/data.parquet"
+        self.assertEqual(record["status"], "ok")
+        self.assertEqual([row["run_key"] for row in read_rows(store.get(october))], ["RunId=9-3;TaskId=net"])
+        self.assertIn(RUNS_KEY, store.puts)
+        self.assertEqual(len([w for w in record["warnings"] if w.startswith("runs: ")]), 3)
+
+    def test_a_bad_old_period_does_not_block_the_current_one(self):
+        cases = {
+            "manifest in another bucket": lambda store: store.add(
+                f"{AWS}/metadata/BILLING_PERIOD=2026-10/Manifest.json",
+                json.dumps({"executionId": "x", "dataFiles": ["s3://other/x.parquet"]}).encode()),
+            "corrupt data file": lambda store: (
+                store.add(f"{AWS}/data/BILLING_PERIOD=2026-10/x/acme-focus-daily-00001.snappy.parquet", b"not parquet"),
+                store.add(f"{AWS}/metadata/BILLING_PERIOD=2026-10/Manifest.json", json.dumps({
+                    "executionId": "x",
+                    "dataFiles": [f"s3://{BUCKET}/{AWS}/data/BILLING_PERIOD=2026-10/x/acme-focus-daily-00001.snappy.parquet"],
+                }).encode())),
+        }
+        for name, break_october in cases.items():
+            with self.subTest(name):
+                store = seeded_store()
+                break_october(store)
+
+                with self.assertRaises(NormalizeError):
+                    run(store, CONFIG, NOW)
+
+                self.assertIn(AWS_KEY, store.puts)
+                latest = json.loads(store.get("normalized/_runs/latest.json"))
+                self.assertEqual([e.split(":")[0] for e in latest["errors"]], ["aws 2026-10"])
+
+        store = seeded_store()
+        store.add(f"{DATABRICKS}/table=usage/billing_period=2026-10/run=20261121T060000Z/part-0.parquet", b"not parquet")
+        with self.assertRaises(NormalizeError):
+            run(store, CONFIG, NOW)
+        self.assertIn(DATABRICKS_KEY, store.puts)
+
+    def test_warnings_persist_while_their_output_is_unchanged(self):
+        store = seeded_store()
+        add_usage(store, sku="NEW_SKU")
+        add_record(store, "2026-11-20", "broken", b"{not json")
+
+        first = run(store, CONFIG, NOW)
+        second = run(store, CONFIG, NOW + timedelta(hours=1))
+
+        for record in (first, second):
+            self.assertIn("databricks 2026-11: 1 rows have no list price", record["warnings"])
+            self.assertEqual(len([w for w in record["warnings"] if w.startswith("runs: ")]), 1)
+        self.assertEqual([o["rebuilt"] for o in second["outputs"]], [False, False, False])
 
 
 class LoadConfigTest(unittest.TestCase):

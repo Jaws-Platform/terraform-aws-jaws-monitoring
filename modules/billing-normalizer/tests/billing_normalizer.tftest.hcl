@@ -192,6 +192,29 @@ run "a_custom_layer_replaces_the_default" {
   }
 }
 
+run "memory_is_an_input" {
+  command = plan
+
+  variables {
+    memory_size = 2048
+  }
+
+  assert {
+    condition     = aws_lambda_function.this.memory_size == 2048
+    error_message = "memory_size sets the function's memory, for months with many line items"
+  }
+}
+
+run "rejects_a_memory_size_lambda_does_not_allow" {
+  command = plan
+
+  variables {
+    memory_size = 64
+  }
+
+  expect_failures = [var.memory_size]
+}
+
 run "needs_at_least_one_source" {
   command = plan
 

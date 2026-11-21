@@ -14,9 +14,16 @@ def _is_map(field: pa.Field) -> bool:
     return pa.types.is_map(field.type)
 
 
-def read_rows(body: bytes) -> list[dict]:
-    """Every row of a Parquet object; map columns come back as dicts."""
-    table = pq.read_table(io.BytesIO(body))
+def read_rows(body: bytes, columns: Sequence[str] | None = None) -> list[dict]:
+    """Every row of a Parquet object; map columns come back as dicts.
+
+    With columns, only those that exist in the object are read: a wide delivery
+    is never materialized whole.
+    """
+    if columns is not None:
+        available = set(pq.ParquetFile(io.BytesIO(body)).schema_arrow.names)
+        columns = [name for name in columns if name in available]
+    table = pq.read_table(io.BytesIO(body), columns=columns)
     maps = [field.name for field in table.schema if _is_map(field)]
     rows = table.to_pylist()
     for row in rows:

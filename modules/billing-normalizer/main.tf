@@ -76,7 +76,7 @@ resource "aws_lambda_function" "this" {
   handler       = "normalizer.handler.handler"
   layers        = [local.pandas_layer_arn]
   timeout       = 900
-  memory_size   = 1024
+  memory_size   = var.memory_size
 
   filename         = data.archive_file.code.output_path
   source_code_hash = data.archive_file.code.output_base64sha256

@@ -3,7 +3,7 @@ import unittest
 from datetime import UTC, datetime
 
 from fakes import FakeStore
-from normalizer.aws import latest_aws_deliveries, map_aws_rows
+from normalizer.aws import latest_aws_manifests, map_aws_rows, read_aws_delivery
 from normalizer.schema import focus_schema
 
 BUCKET = "acme-billing"
@@ -62,7 +62,8 @@ class LatestDeliveriesTest(unittest.TestCase):
         store.add(f"{PREFIX}/metadata/BILLING_PERIOD=2026-10/Manifest.json", manifest("c", "2026-10", ["c/x-00001.snappy.parquet"]))
         store.add(f"{PREFIX}/data/BILLING_PERIOD=2026-11/b/x-00001.snappy.parquet", b"data")
 
-        deliveries = latest_aws_deliveries(store, BUCKET, PREFIX)
+        manifests = latest_aws_manifests(store, PREFIX)
+        deliveries = {p: read_aws_delivery(store, BUCKET, p, info) for p, info in manifests.items()}
 
         self.assertEqual({p: d.execution_id for p, d in deliveries.items()}, {"2026-10": "c", "2026-11": "b"})
         self.assertEqual(deliveries["2026-11"].data_keys, (f"{PREFIX}/data/BILLING_PERIOD=2026-11/b/x-00001.snappy.parquet",))
@@ -74,8 +75,9 @@ class LatestDeliveriesTest(unittest.TestCase):
         body["dataFiles"] = ["s3://other/x.parquet"]
         store.add(key, json.dumps(body).encode())
 
+        [(period, info)] = latest_aws_manifests(store, PREFIX).items()
         with self.assertRaisesRegex(ValueError, "Manifest.json"):
-            latest_aws_deliveries(store, BUCKET, PREFIX)
+            read_aws_delivery(store, BUCKET, period, info)
 
 
 class MapAwsRowsTest(unittest.TestCase):

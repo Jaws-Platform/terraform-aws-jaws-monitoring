@@ -27,12 +27,30 @@ def records_by_month(store: Store, prefixes: Sequence[str]) -> dict[str, list[Ob
     return {month: sorted(infos, key=lambda i: i.key) for month, infos in sorted(months.items())}
 
 
+_INT32 = (-(2**31), 2**31 - 1)
+
+
+def _mapping(value, field: str) -> Mapping:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} is not an object")
+    return value
+
+
+def _int32(value, field: str) -> int | None:
+    number = _number(value, int, field)
+    if number is not None and not _INT32[0] <= number <= _INT32[1]:
+        raise ValueError(f"{field} is out of range: {value!r}")
+    return number
+
+
 def _timestamp(value, field: str) -> datetime | None:
     if value is None:
         return None
     try:
         parsed = datetime.fromisoformat(str(value))
-    except ValueError:
+    except (ValueError, OverflowError):
         raise ValueError(f"{field} is not an ISO 8601 time: {value!r}") from None
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
@@ -52,17 +70,19 @@ def _text(value) -> str | None:
     return str(value).strip() or None
 
 
-def _string_map(value) -> dict[str, str]:
-    return {str(k): str(v) for k, v in (value or {}).items() if v is not None}
+def _string_map(value, field: str) -> dict[str, str]:
+    return {str(k): str(v) for k, v in _mapping(value, field).items() if v is not None}
 
 
 def flatten_event(record: Mapping, *, join_tags: Sequence[str], source: str) -> dict:
     """One runs-1 row for one event record; ValueError says what is wrong with it."""
+    if not isinstance(record, Mapping):
+        raise ValueError("the record is not a JSON object")
     if record.get("schema") != "runs-1":
         raise ValueError(f"schema is {record.get('schema')!r}, not 'runs-1'")
     if record.get("event") not in RUN_EVENTS:
         raise ValueError(f"event is {record.get('event')!r}, not one of {', '.join(RUN_EVENTS)}")
-    tags = _string_map(record.get("tags"))
+    tags = _string_map(record.get("tags"), "tags")
     missing = [tag for tag in join_tags if not tags.get(tag, "").strip()]
     if missing:
         raise ValueError(f"tags lack {', '.join(missing)}")
@@ -73,8 +93,8 @@ def flatten_event(record: Mapping, *, join_tags: Sequence[str], source: str) -> 
     if at is None:
         raise ValueError("at is missing")
 
-    instance = record.get("instance") or {}
-    prices = record.get("prices") or {}
+    instance = _mapping(record.get("instance"), "instance")
+    prices = _mapping(record.get("prices"), "prices")
     return {
         "run_key": ";".join(f"{tag}={tags[tag]}" for tag in join_tags),
         "tags": tags,
@@ -84,7 +104,7 @@ def flatten_event(record: Mapping, *, join_tags: Sequence[str], source: str) -> 
         "campaign": _text(record.get("campaign")),
         "kind": _text(record.get("kind")),
         "instance_type": _text(instance.get("type")),
-        "accelerators": _number(instance.get("accelerators"), int, "instance.accelerators"),
+        "accelerators": _int32(instance.get("accelerators"), "instance.accelerators"),
         "market": _text(instance.get("market")),
         "zone": _text(instance.get("zone")),
         "instance_id": _text(instance.get("id")),
@@ -94,10 +114,10 @@ def flatten_event(record: Mapping, *, join_tags: Sequence[str], source: str) -> 
         "ceiling_usd": _number(prices.get("ceiling_usd"), float, "prices.ceiling_usd"),
         "max_hours": _number(prices.get("max_hours"), float, "prices.max_hours"),
         "outcome": _text(record.get("outcome")),
-        "exit_code": _number(record.get("exit_code"), int, "exit_code"),
+        "exit_code": _int32(record.get("exit_code"), "exit_code"),
         "interrupted_at": _timestamp(record.get("interrupted_at"), "interrupted_at"),
         "reason": _text(record.get("reason")),
-        "links": _string_map(record.get("links")),
-        "attributes": _string_map(record.get("attributes")),
+        "links": _string_map(record.get("links"), "links"),
+        "attributes": _string_map(record.get("attributes"), "attributes"),
         "x_Source": source,
     }

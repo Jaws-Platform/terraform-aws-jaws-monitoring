@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from .schema import FOCUS_BASE_COLUMNS, promoted_column
-from .store import Store
+from .store import ObjectInfo, Store
 from .tags import promote
 
 _PERIOD = re.compile(r"/BILLING_PERIOD=(\d{4}-\d{2})/")
@@ -27,9 +27,13 @@ class AwsDelivery:
     data_keys: tuple[str, ...]
 
 
-def latest_aws_deliveries(store: Store, bucket: str, delivery_prefix: str) -> dict[str, AwsDelivery]:
-    """Each billing period's newest delivery, by the newest manifest in its metadata folder."""
-    newest = {}
+# Every column map_aws_rows reads: a delivery's other columns are never loaded.
+READ_COLUMNS = (*FOCUS_BASE_COLUMNS, "PublisherName")
+
+
+def latest_aws_manifests(store: Store, delivery_prefix: str) -> dict[str, ObjectInfo]:
+    """Each billing period's newest manifest in its metadata folder, by period."""
+    newest: dict[str, ObjectInfo] = {}
     for info in store.list(f"{delivery_prefix}/metadata/"):
         match = _PERIOD.search(info.key)
         if not match or not info.key.endswith("Manifest.json"):
@@ -37,18 +41,19 @@ def latest_aws_deliveries(store: Store, bucket: str, delivery_prefix: str) -> di
         period = match.group(1)
         if period not in newest or info.last_modified > newest[period].last_modified:
             newest[period] = info
+    return dict(sorted(newest.items()))
 
-    deliveries = {}
-    for period, info in sorted(newest.items()):
-        body = json.loads(store.get(info.key))
-        keys = []
-        for uri in body.get("dataFiles", []):
-            head = f"s3://{bucket}/"
-            if not uri.startswith(head):
-                raise ValueError(f"{info.key}: data file {uri} is not in s3://{bucket}")
-            keys.append(uri[len(head):])
-        deliveries[period] = AwsDelivery(period=period, execution_id=str(body["executionId"]), data_keys=tuple(keys))
-    return deliveries
+
+def read_aws_delivery(store: Store, bucket: str, period: str, manifest: ObjectInfo) -> AwsDelivery:
+    """The delivery a manifest names; ValueError if its data files are not in the bucket."""
+    body = json.loads(store.get(manifest.key))
+    keys = []
+    for uri in body.get("dataFiles", []):
+        head = f"s3://{bucket}/"
+        if not uri.startswith(head):
+            raise ValueError(f"{manifest.key}: data file {uri} is not in s3://{bucket}")
+        keys.append(uri[len(head):])
+    return AwsDelivery(period=period, execution_id=str(body["executionId"]), data_keys=tuple(keys))
 
 
 def map_aws_rows(

@@ -118,6 +118,20 @@ variable "pandas_layer_arn" {
   default     = null
 }
 
+variable "memory_size" {
+  description = <<-EOT
+    The function's memory, in MB. A month of AWS line items takes roughly 6 KB per
+    row at peak; raise it when a billing period reaches about 150,000 rows.
+  EOT
+  type        = number
+  default     = 1024
+
+  validation {
+    condition     = var.memory_size >= 128 && var.memory_size <= 10240 && var.memory_size == floor(var.memory_size)
+    error_message = "memory_size must be a whole number of MB from 128 to 10240."
+  }
+}
+
 variable "log_retention_days" {
   description = "Retention of the function's CloudWatch log group, in days."
   type        = number

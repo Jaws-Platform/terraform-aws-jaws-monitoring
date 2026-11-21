@@ -44,9 +44,14 @@ Corrections and restatements arrive as new deliveries and simply replace the
 period. Changing the configuration or upgrading to a release with a new
 mapper version rebuilds everything from `raw/`.
 
-Each provider runs on its own: one that fails is reported and the others are
-still written. The run record is always written; the invocation then fails,
-so the function's `Errors` metric shows it.
+Each output is built on its own: one that fails is reported and every other
+output is still written, so a bad old period never freezes the current one.
+Task runs go first, as the smallest and most time-critical table, and only the
+FOCUS columns are read from an AWS delivery. The run record is always written;
+the invocation then fails, so the function's `Errors` metric shows it. An
+output's warnings (unpriced Databricks usage, skipped run records) are kept
+on it and reported by every run for as long as the output stands, not just
+by the run that built it.
 
 ```json
 {"schema": "normalizer-run-1", "started_at": "…Z", "ended_at": "…Z", "status": "ok",
@@ -82,7 +87,9 @@ no system table gives a workspace's region.
 **Task runs** (`runs`): one JSON object per event, at
 `<prefix>/…/date=YYYY-MM-DD/<anything>.json`, grouped by that month. The run's
 `join_tags` values are the tags on its resources, so the event table joins to
-the cost rows. Invalid records are skipped and reported as warnings.
+the cost rows. A record that is invalid in any way (not an object, a missing
+field, a value out of range) is skipped and reported as a warning; it never
+blocks the other records.
 
 ```json
 {"schema": "runs-1", "event": "started | finished | swept", "at": "2026-11-24T21:10:03Z",
@@ -163,6 +170,7 @@ No modules.
 | aws | The AWS Data Export source, or null for none. `delivery_prefix` is the export's<br/>`delivery_prefix` (`aws-billing-export`). Rows whose `PublisherName` is in<br/>`exclude_publishers` are dropped, for a provider also billed directly, such<br/>as Databricks bought through AWS Marketplace. | <pre>object({<br/>    delivery_prefix    = string<br/>    exclude_publishers = optional(list(string), [])<br/>  })</pre> | `null` | no |
 | databricks | The Databricks system-table source, or null for none. `prefix` is where the<br/>daily job delivers (see the README for its layout). `account_name` names the<br/>billing account in the rows. `workspace_names` names workspaces the delivered<br/>workspace table does not; `workspace_projects` gives the `Project` of usage<br/>that carries none, by workspace ID or name. | <pre>object({<br/>    prefix             = optional(string, "raw/provider=databricks/source=system-tables")<br/>    account_name       = optional(string, "Databricks")<br/>    workspace_names    = optional(map(string), {})<br/>    workspace_projects = optional(map(string), {})<br/>  })</pre> | `null` | no |
 | log\_retention\_days | Retention of the function's CloudWatch log group, in days. | `number` | `30` | no |
+| memory\_size | The function's memory, in MB. A month of AWS line items takes roughly 6 KB per<br/>row at peak; raise it when a billing period reaches about 150,000 rows. | `number` | `1024` | no |
 | normalized\_prefix | Where the normalized layer is written: `billing-bucket`'s `normalized_prefix`. No leading or trailing slash. | `string` | `"normalized"` | no |
 | pandas\_layer\_arn | The Lambda layer that provides pyarrow. Null uses the AWS SDK for pandas layer<br/>for Python 3.13 on arm64 in the function's region (awswrangler 3.18.0). | `string` | `null` | no |
 | promoted\_tags | Tags promoted out of each row's tag map into their own `x_<tag>` columns, for<br/>grouping. A tag key is matched as written, as `user:<tag>` or as<br/>`user_<tag lowercased>`. Changing the list rebuilds every output. | `list(string)` | <pre>[<br/>  "Project",<br/>  "Component",<br/>  "Environment"<br/>]</pre> | no |
