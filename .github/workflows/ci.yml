@@ -162,6 +162,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+      # Runs the Python tests of modules that pin files/requirements-test.txt.
+      - uses: astral-sh/setup-uv@v7
       # init, validate, tflint, terraform test (mocked providers, no cloud
       # credentials), the terraform-docs diff, script tests, and the examples.
       - name: Check the module and its examples

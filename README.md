@@ -12,8 +12,9 @@ billing periods), normalizes it to the FinOps
 [FOCUS](https://focus.finops.org/) schema, and shows it next to the health of
 the node itself.
 
-This first release holds the storage half: the bucket every source delivers
-into, and the organization-wide AWS export. It is one of the
+So far it holds the cost pipeline: the bucket every source delivers into, the
+organization-wide AWS export, and the normalizer that turns every delivery into
+one table. It is one of the
 [Jaws](https://github.com/Jaws-Platform/jaws) module families, and has no
 dependency on Jaws: names, accounts and prefixes are plain inputs.
 
@@ -23,6 +24,7 @@ dependency on Jaws: names, accounts and prefixes are plain inputs.
 |---|---|---|
 | [`billing-bucket`](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/tree/main/modules/billing-bucket) | The bucket every billing source delivers into. Raw deliveries are never deleted; the normalized layer is rebuildable from them | the account that runs the platform |
 | [`aws-billing-export`](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/tree/main/modules/aws-billing-export) | The FOCUS 1.2 daily AWS Data Export, in Parquet, delivered to that bucket, across accounts if needed | the account whose bill it exports: the payer, for every account of an organization |
+| [`billing-normalizer`](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/tree/main/modules/billing-normalizer) | An hourly Lambda that rebuilds each changed billing period of every source as FOCUS-aligned Parquet, and task-run records as an event table | the account that runs the platform |
 
 The root module creates nothing yet. A later release makes it the all-in-one
 composition. [`examples/organization-billing`](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/tree/main/examples/organization-billing)
@@ -45,6 +47,8 @@ s3://<bucket>/
     provider=<p>/source=<s>/…              #   any other source, in key=value folders
   normalized/                              # the normalizer's output; rebuildable from raw/
     schema=focus-1.2/provider=<p>/billing_period=YYYY-MM/data.parquet
+    schema=runs-1/event_month=YYYY-MM/data.parquet   # task-run events, joined to cost rows by tags
+    _runs/<YYYYMMDDTHHMMSSZ>.json, _runs/latest.json # one record per normalizer run
 ```
 
 The `key=value` folders are what Athena, DuckDB and Spark read as partitions,

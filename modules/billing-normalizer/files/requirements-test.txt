@@ -1,0 +1,4 @@
+# The tests' only third-party package. In Lambda, pyarrow comes from the AWS
+# SDK for pandas layer (awswrangler 3.18.0: pyarrow >= 21, < 27), so the code
+# uses only pyarrow APIs that are stable across those versions.
+pyarrow==21.0.0

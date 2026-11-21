@@ -105,7 +105,9 @@ adding a module needs no workflow change.
   explicitly, and a test pins it.
 - **Scripts.** Scripts a module installs live in `files/`. Python scripts ship
   `files/test_*.py` (stdlib `unittest`) and shell scripts must pass
-  `shellcheck`; CI runs both.
+  `shellcheck`; CI runs both. Code that needs third-party packages (a Lambda
+  on a layer) pins them in `files/requirements-test.txt`; its tests then run
+  on Python 3.13 under `uv`, which `scripts/check.sh` needs installed.
 - **Documentation.** Each `README.md` opens with what the module creates and
   why, shows a usage snippet, and ends with the terraform-docs reference
   between the `BEGIN_TF_DOCS` and `END_TF_DOCS` markers. Regenerate it with
