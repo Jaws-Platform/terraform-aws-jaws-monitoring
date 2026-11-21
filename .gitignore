@@ -29,3 +29,6 @@ __pycache__/
 
 # Local provider cache used by scripts/check.sh
 .terraform-plugin-cache/
+
+# The normalizer Lambda zip, built by archive_file at plan
+**/.build/
