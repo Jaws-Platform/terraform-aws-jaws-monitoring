@@ -1187,3 +1187,88 @@ run "an_over_ceiling_run_posts_once_a_week" {
     error_message = "an over-ceiling run is reported once, to the pipeline channel, not every 4 hours while its bill stands"
   }
 }
+
+run "the_overview_follows_the_house_style" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).uid == "cost-overview" && jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).title == "Cost · Overview" && jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).editable == false && jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).refresh == "30s" && jsonencode(jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).time) == jsonencode({ from = "now-90d", to = "now" })
+    error_message = "the overview is read-only, over the last 90 days, refreshed every 30 seconds"
+  }
+
+  assert {
+    condition     = jsonencode([for v in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).templating.list : v.name]) == jsonencode(["provider", "account", "project", "environment"]) && alltrue([for v in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).templating.list : v.datasource.uid == "cost" && v.multi && v.includeAll])
+    error_message = "four multi-value filters, each from the cost database"
+  }
+
+  assert {
+    condition     = length(distinct([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p.id])) == length(jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels) && alltrue([for i, p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p.type != "row" || try(jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels[i + 1].type, "") == "text"]) && alltrue([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : contains(["row", "text"], p.type) || trimspace(try(p.description, "")) != ""])
+    error_message = "unique ids, every row opens with text, every panel has a description"
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p if contains([32, 42, 53], p.id)]) == 3
+    error_message = "the panels the cost rules link are there"
+  }
+}
+
+run "every_cost_panel_reads_the_cost_database" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = alltrue(flatten([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : [for t in try(p.targets, []) : t.datasource.uid == "cost" && strcontains(t.rawSql, "cost.")]]))
+    error_message = "every query reads the cost database's own objects"
+  }
+}
+
+run "the_overview_needs_cost" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = !contains(keys(output.files), "grafana/dashboards/Cost/overview.json")
+    error_message = "a host-only node has no cost dashboards"
+  }
+}
+
+run "the_budget_and_anomaly_panels_state_their_numbers" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost       = { providers = ["aws", "databricks"] }
+    thresholds = merge(var.thresholds, { anomaly_ratio = { warning = 3, critical = 6 } })
+  }
+
+  assert {
+    condition     = strcontains(one([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p.description if p.id == 32]), "100")
+    error_message = "the budgets table says when a budget alerts"
+  }
+
+  assert {
+    condition     = strcontains(one([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p.description if p.id == 42]), "3") && strcontains(one([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p.description if p.id == 42]), "6")
+    error_message = "the movers table states the anomaly thresholds"
+  }
+}

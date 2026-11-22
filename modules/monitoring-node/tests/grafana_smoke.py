@@ -142,6 +142,36 @@ def cost_problems(url: str, auth: str) -> list:
     return []
 
 
+def cost_query_problems(release: Path, url: str, auth: str) -> list:
+    """Every SQL panel of the cost dashboards runs against the real cost database.
+
+    Grafana expands dashboard variables in the browser, so each `($name)` is
+    replaced by the variable's own query, which is what "All" selects."""
+    found = []
+    for path, board in dashboards(release).items():
+        variables = {v["name"]: v["query"] for v in board.get("templating", {}).get("list", [])}
+        for p in panels(board):
+            for t in p.get("targets", []):
+                if (t.get("datasource") or {}).get("uid") != "cost":
+                    continue
+                sql = t["rawSql"]
+                for name, query in variables.items():
+                    sql = sql.replace(f"(${name})", f"({query})")
+                body = json.dumps({"from": "now-90d", "to": "now", "queries": [{
+                    "refId": "A", "datasource": {"uid": "cost", "type": "grafana-postgresql-datasource"},
+                    "rawSql": sql, "format": t.get("format", "table")}]}).encode()
+                request = urllib.request.Request(url + "/api/ds/query", data=body, method="POST",
+                                                 headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"})
+                try:
+                    with urllib.request.urlopen(request, timeout=10) as response:
+                        result = json.loads(response.read())["results"]["A"]
+                except urllib.error.HTTPError as error:
+                    result = {"error": error.read().decode(errors="replace")[:300]}
+                if result.get("error"):
+                    found.append(f"cost query: {path} panel {p['id']} ({p.get('title')}): {result['error']}")
+    return found
+
+
 def problems(want: dict, got: dict) -> list:
     found = []
     for key in ("rules", "dashboards", "datasources"):
@@ -174,7 +204,7 @@ def compare(release: str, url: str, user: str, password: str, phase: str) -> Non
         try:
             found = problems(want, observed(url, auth))
             if not found and "cost" in want["datasources"]:
-                found = cost_problems(url, auth)
+                found = cost_problems(url, auth) or cost_query_problems(Path(release), url, auth)
         except (urllib.error.URLError, OSError, ValueError) as error:
             found = [f"api: {error}"]
         if not found:
@@ -184,6 +214,8 @@ def compare(release: str, url: str, user: str, password: str, phase: str) -> Non
                 print(f"grafana smoke ({phase}): {line}", file=sys.stderr)
             raise SystemExit(1)
         time.sleep(3)
+    if "cost" in want["datasources"]:
+        print(f"grafana smoke ({phase}): every cost dashboard query runs on the cost database")
     print(f"grafana smoke ({phase}): {len(want['rules'])} rules, {len(want['dashboards'])} dashboards, "
           f"{len(want['contact_points'])} contact points, root receiver {want['root_receiver'] or 'default'} - as rendered")
 
