@@ -143,8 +143,21 @@ locals {
     ],
   )
 
+  # The Pipeline row (with cost): how fresh the cost data is.
+  pipeline_series_specs = [
+    for s in [
+      { id = 62, title = "Last cost-sync", description = "Hours since cost-sync last loaded the cost data. ${local.threshold_text.cost_sync}", grid = { x = 0, y = 94, w = 8, h = 8 }, datasource = local.prom, targets = [{ datasource = local.prom, expr = local.q.cost_sync_hours, legendFormat = "hours since" }], unit = "h", lines = "cost_sync", draw = "line", stack = false, min = 0, max = null, no_value = null, needs = "cost" },
+      { id = 63, title = "Last successful normalizer run", description = "Hours since the normalizer last ran without errors. ${local.threshold_text.normalizer}", grid = { x = 8, y = 94, w = 8, h = 8 }, datasource = local.prom, targets = [{ datasource = local.prom, expr = local.q.normalizer_hours, legendFormat = "hours since" }], unit = "h", lines = "normalizer", draw = "line", stack = false, min = 0, max = null, no_value = null, needs = "cost" },
+      { id = 64, title = "Newest AWS charge", description = "How old the newest AWS charge loaded is; AWS delivers each day's charges a day or two later. ${local.threshold_text.aws_charge}", grid = { x = 16, y = 94, w = 8, h = 8 }, datasource = local.prom, targets = [{ datasource = local.prom, expr = local.q.aws_charge_days, legendFormat = "days old" }], unit = "d", lines = "aws_charge", draw = "line", stack = false, min = 0, max = null, no_value = null, needs = "aws" },
+      { id = 65, title = "Newest Databricks delivery", description = "Hours since the Databricks billing job's newest delivery was normalized. ${local.threshold_text.databricks}", grid = { x = 0, y = 102, w = 8, h = 8 }, datasource = local.prom, targets = [{ datasource = local.prom, expr = local.q.databricks_hours, legendFormat = "hours old" }], unit = "h", lines = "databricks", draw = "line", stack = false, min = 0, max = null, no_value = null, needs = "databricks" },
+      { id = 66, title = "Overdue task runs", description = "Task runs with no finished or swept record, by how many hours they are past their max hours plus one: possibly leaked instances. Critical at any.", grid = { x = 8, y = 102, w = 8, h = 8 }, datasource = local.prom, targets = [{ datasource = local.prom, expr = local.q.task_overdue, legendFormat = "{{project}} {{run_key}}" }], unit = "h", lines = "task_overdue", draw = "line", stack = false, min = 0, max = null, no_value = "None", needs = "cost" },
+      { id = 67, title = "Task runs over their ceiling", description = "Task runs whose billed cost is over their ceiling, by how much. Critical at any.", grid = { x = 16, y = 102, w = 8, h = 8 }, datasource = local.prom, targets = [{ datasource = local.prom, expr = local.q.task_over_ceiling, legendFormat = "{{project}} {{run_key}}" }], unit = "currencyUSD", lines = "task_over_ceiling", draw = "line", stack = false, min = 0, max = null, no_value = "None", needs = "cost" },
+      { id = 68, title = "Normalizer: last run, errors and warnings", description = "Whether the newest normalizer run failed (1), and its errors and warnings; _runs/latest.json in the billing bucket has the details. Critical when the last run failed.", grid = { x = 0, y = 110, w = 24, h = 8 }, datasource = local.prom, targets = [{ datasource = local.prom, expr = local.q.normalizer_failed, legendFormat = "last run failed" }, { datasource = local.prom, expr = "monitoring_normalizer_errors", legendFormat = "errors" }, { datasource = local.prom, expr = "monitoring_normalizer_warnings", legendFormat = "warnings" }], unit = "short", lines = "normalizer_failed", draw = "line", stack = false, min = 0, max = null, no_value = null, needs = "cost" },
+    ] : s if(s.needs == "cost" ? local.cost_on : contains(local.cost_providers, s.needs))
+  ]
+
   series_panels = [
-    for s in local.series_specs : {
+    for s in concat(local.series_specs, local.pipeline_series_specs) : {
       id          = s.id
       type        = "timeseries"
       title       = s.title
@@ -187,6 +200,8 @@ locals {
     { id = 40, y = 61, title = "Services" },
     { id = 50, y = 80, title = "Patching" },
   ]
+  pipeline_row_specs  = [for r in [{ id = 60, y = 91, title = "Pipeline" }] : r if local.cost_on]
+  pipeline_text_specs = [for t in [{ id = 61, y = 92, content = "**Pipeline.** Is the cost data still arriving? The last cost-sync, the last successful normalizer run, the newest AWS charge and Databricks delivery, and task runs that may have leaked or gone over their ceiling. Each clock starts when this node first ran, until data arrives." }] : t if local.cost_on]
 
   text_specs = [
     { id = 11, y = 5, content = "**Is the node keeping up?** CPU used is a 10-minute average. On a burstable instance type, the credit balance says whether it can keep bursting. The dashed lines are the alert thresholds." },
@@ -196,8 +211,8 @@ locals {
     { id = 51, y = 81, content = "**Patching.** Amazon Linux 2023 locks packages to its image's release, so patching is an AMI bump: a PR and a release that replace the instance and keep `/data`." },
   ]
 
-  row_panels  = [for r in local.row_specs : { id = r.id, type = "row", title = r.title, collapsed = false, gridPos = { x = 0, y = r.y, w = 24, h = 1 }, panels = [] }]
-  text_panels = [for t in local.text_specs : { id = t.id, type = "text", title = "", transparent = true, gridPos = { x = 0, y = t.y, w = 24, h = 2 }, options = { mode = "markdown", content = t.content } }]
+  row_panels  = [for r in concat(local.row_specs, local.pipeline_row_specs) : { id = r.id, type = "row", title = r.title, collapsed = false, gridPos = { x = 0, y = r.y, w = 24, h = 1 }, panels = [] }]
+  text_panels = [for t in concat(local.text_specs, local.pipeline_text_specs) : { id = t.id, type = "text", title = "", transparent = true, gridPos = { x = 0, y = t.y, w = 24, h = 2 }, options = { mode = "markdown", content = t.content } }]
 
   # ----------------------------------------------------------- dashboard
   host_panels_by_id = merge(

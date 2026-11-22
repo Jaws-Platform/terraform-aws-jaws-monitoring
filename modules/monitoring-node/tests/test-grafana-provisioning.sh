@@ -64,6 +64,10 @@ thresholds='  thresholds = {
     container_restarts      = { warning = 1, critical = 3 }
     tls_days                = { warning = 14, critical = 3 }
     os_release_update_days  = { warning = 7 }
+    normalizer_hours          = { warning = 3, critical = 12 }
+    aws_charge_days           = { warning = 3, critical = 5 }
+    databricks_delivery_hours = { warning = 36, critical = 60 }
+    cost_sync_hours           = { warning = 2, critical = 6 }
   }'
 
 phase1_args() {

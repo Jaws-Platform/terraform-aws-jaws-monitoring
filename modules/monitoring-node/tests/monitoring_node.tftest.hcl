@@ -488,18 +488,22 @@ run "the_default_thresholds_are_the_specs" {
 
   assert {
     condition = jsonencode(var.thresholds) == jsonencode({
-      container_restarts      = { critical = 3, warning = 1 }
-      cpu_credits_percent     = { critical = 5, warning = 25 }
-      cpu_percent             = { critical = 85, warning = 60 }
-      disk_full_days          = { critical = 2, warning = 7 }
-      disk_percent            = { critical = 90, warning = 70 }
-      inodes_percent          = { critical = 90, warning = 70 }
-      memory_percent          = { critical = 90, warning = 70 }
-      os_release_update_days  = { warning = 7 }
-      prometheus_history_days = { warning = 90 }
-      prometheus_size_percent = { warning = 85 }
-      swap_percent            = { critical = 75, warning = 25 }
-      tls_days                = { critical = 3, warning = 14 }
+      container_restarts        = { critical = 3, warning = 1 }
+      cost_sync_hours           = { critical = 6, warning = 2 }
+      aws_charge_days           = { critical = 5, warning = 3 }
+      databricks_delivery_hours = { critical = 60, warning = 36 }
+      normalizer_hours          = { critical = 12, warning = 3 }
+      cpu_credits_percent       = { critical = 5, warning = 25 }
+      cpu_percent               = { critical = 85, warning = 60 }
+      disk_full_days            = { critical = 2, warning = 7 }
+      disk_percent              = { critical = 90, warning = 70 }
+      inodes_percent            = { critical = 90, warning = 70 }
+      memory_percent            = { critical = 90, warning = 70 }
+      os_release_update_days    = { warning = 7 }
+      prometheus_history_days   = { warning = 90 }
+      prometheus_size_percent   = { warning = 85 }
+      swap_percent              = { critical = 75, warning = 25 }
+      tls_days                  = { critical = 3, warning = 14 }
     })
     error_message = "the thresholds default to spec 6.8's table (and the owner's history rule)"
   }
@@ -710,4 +714,14 @@ run "rejects_a_prefix_with_slashes" {
   }
 
   expect_failures = [var.cost]
+}
+
+run "rejects_pipeline_thresholds_in_the_wrong_order" {
+  command = plan
+
+  variables {
+    thresholds = { normalizer_hours = { warning = 12, critical = 3 } }
+  }
+
+  expect_failures = [var.thresholds]
 }
