@@ -152,4 +152,59 @@ expect rebuilt "version" "$(q "select value from cost.meta where name = 'schema_
 expect rebuilt "rows" "$(q 'select count(*) from cost.lines')" 1
 echo "cost sync (postgres): a_schema_version_change_rebuilds"
 
+# ------------------------------------------------------- the cost model
+# Fresh tables, the model's rows, and budgets through config.json.
+q 'truncate cost.lines, cost.run_events, cost.loads' > /dev/null
+rm -rf "$bucket/normalized"
+docker exec -i "$container" psql -U monitoring -d cost -X -q -v ON_ERROR_STOP=1 < "$here/cost_model_rows.sql" > /dev/null
+budgets() { # <projects json>
+  printf '{"bucket": "acme-billing", "prefix": "normalized", "providers": ["aws", "databricks"], "run_join_tags": ["RunId", "TaskId"], "budgets": {"total": 400, "projects": %s, "accounts": {"production": 1000}}}' "$1" \
+    > "$root/data/config/current/cost-sync/config.json"
+}
+budgets '{"alpha": 300, "gamma": 50}'
+sync || fail "the cost model: the run failed"
+at() { # <cost.now> <query>
+  docker exec -i "$container" psql -U monitoring -d cost -X -q -At -v ON_ERROR_STOP=1 <<< "SET cost.now = '$1'; $2"
+}
+now='2026-11-21T12:00:00Z'
+
+# complete_days_are_48_hours_old
+expect complete_days "Nov 18" "$(at "$now" "select bool_and(complete) from cost.daily where day = '2026-11-18'")" t
+expect complete_days "Nov 19" "$(at "$now" "select bool_or(complete) from cost.daily where day = '2026-11-19'")" f
+expect complete_days "as of" "$(at "$now" 'select day from cost.as_of')" 2026-11-18
+echo "cost sync (postgres): complete_days_are_48_hours_old"
+
+# the_forecast_uses_the_last_7_complete_days
+expect forecast "alpha" "$(at "$now" "select concat_ws(' ', round(complete_mtd::numeric, 2), round(avg7::numeric, 2), days_left, round(forecast::numeric, 2), round(forecast_percent::numeric, 2)) from cost.month_to_date where scope = 'project' and name = 'alpha'")" "180.00 10.00 12 300.00 100.00"
+echo "cost sync (postgres): the_forecast_uses_the_last_7_complete_days"
+
+# the_forecast_carries_across_a_month_boundary
+expect boundary "alpha" "$(at '2026-11-02T06:00:00Z' "select concat_ws(' ', round(complete_mtd::numeric, 2), round(avg7::numeric, 2), days_left, round(forecast::numeric, 2)) from cost.month_to_date where scope = 'project' and name = 'alpha'")" "0.00 10.00 30 300.00"
+echo "cost sync (postgres): the_forecast_carries_across_a_month_boundary"
+
+# budgets_match_by_id_or_name_and_show_with_no_spend
+expect budgets "the account" "$(at "$now" "select round(budget::numeric) from cost.month_to_date where scope = 'account' and name = '570327089884'")" 1000
+expect budgets "gamma" "$(at "$now" "select concat_ws(' ', round(mtd::numeric, 2), round(used_percent::numeric, 2)) from cost.month_to_date where scope = 'project' and name = 'gamma'")" "0.00 0.00"
+expect budgets "the total" "$(at "$now" "select round(budget::numeric) from cost.month_to_date where scope = 'total'")" 400
+echo "cost sync (postgres): budgets_match_by_id_or_name_and_show_with_no_spend"
+
+# a_new_project_is_not_an_anomaly_of_infinity
+expect anomaly "alpha" "$(at "$now" "select concat_ws(' ', day, round(median14::numeric, 2), round(ratio::numeric, 2), round(excess::numeric, 2)) from cost.anomalies where kind = 'project' and name = 'alpha'")" "2026-11-21 10.00 5.00 40.00"
+expect anomaly "beta" "$(at "$now" "select concat_ws(' ', round(median14::numeric, 2), coalesce(ratio::text, 'null')) from cost.anomalies where kind = 'project' and name = 'beta'")" "0.00 null"
+expect anomaly "the total" "$(at "$now" "select concat_ws(' ', round(spend::numeric, 2), round(median14::numeric, 2), ratio > 4) from cost.anomalies where kind = 'total'")" "62.60 10.60 t"
+echo "cost sync (postgres): a_new_project_is_not_an_anomaly_of_infinity"
+
+# steady_untagged_spend_is_new_only_once
+expect untagged "S3" "$(at "$now" "select round(prior_spend::numeric, 2) from cost.untagged_new where service = 'Amazon Simple Storage Service'")" 0.00
+expect untagged "VPC" "$(at "$now" "select prior_spend > 0 from cost.untagged_new where service = 'Amazon Virtual Private Cloud'")" t
+expect untagged "tax" "$(at "$now" "select count(*) from cost.untagged where service = 'Tax'")" 0
+echo "cost sync (postgres): steady_untagged_spend_is_new_only_once"
+
+# budgets_are_rewritten_every_run
+budgets '{"alpha": 300}'
+sync || fail "budgets_are_rewritten_every_run: the run failed"
+expect rewritten_budgets "gamma" "$(q "select count(*) from cost.budgets where name = 'gamma'")" 0
+expect rewritten_budgets "alpha" "$(q "select round(monthly_usd::numeric) from cost.budgets where scope = 'project' and name = 'alpha'")" 300
+echo "cost sync (postgres): budgets_are_rewritten_every_run"
+
 echo "cost sync (postgres): OK"
