@@ -6,7 +6,9 @@
 # Terraform assertions can't be.
 #
 #   phase 1  render, check every PromQL query with promtool, start Grafana on
-#            the files, compare its API with the files, and read its logs
+#            the files next to a Postgres that the real cost-sync has set up,
+#            compare its API with the files (the Cost data source must connect
+#            and read), and read its logs
 #   phase 2  render a changed configuration (credits and Slack switched off,
 #            a domain added, files removed), start a new Grafana on the same
 #            database, compare again: what was removed must be gone
@@ -28,16 +30,21 @@ docker info > /dev/null 2>&1 || fail "docker isn't running"
 pinned() { sed -n "s/^ *\"$1\" *= *\"\(.*\)\"$/\1/p" "$mod/bundle.tf"; }
 grafana_image="$(pinned grafana)"
 prometheus_image="$(pinned prometheus)"
-[[ -n "$grafana_image" && -n "$prometheus_image" ]] || fail "can't read the pinned images from bundle.tf"
+postgres_image="$(pinned postgres)"
+[[ -n "$grafana_image" && -n "$prometheus_image" && -n "$postgres_image" ]] || fail "can't read the pinned images from bundle.tf"
 
 scratch="$(mktemp -d)"
 name="grafana-smoke-$$"
 volume="$name-data"
 password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+reader_password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+network="$name-net"
+postgres="$name-pg"
 
 cleanup() {
-  docker rm -f "$name" > /dev/null 2>&1 || true
+  docker rm -f "$name" "$postgres" > /dev/null 2>&1 || true
   docker volume rm -f "$volume" > /dev/null 2>&1 || true
+  docker network rm "$network" > /dev/null 2>&1 || true
   rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -70,6 +77,7 @@ $thresholds
     channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }
     routes   = { host = "platform", pipeline = "platform", cost = "costs" }
   }
+  cost = { providers = ["aws", "databricks"] }
   extra_dashboards  = { "Extra/extra.json" = file("$here/fixtures/extra-dashboard.json") }
   extra_alert_rules = {
     smoke = file("$here/fixtures/extra-rule.yaml")
@@ -126,11 +134,34 @@ check_queries() { # <phase>
   echo "grafana smoke ($1): promtool parses all $count PromQL queries"
 }
 
+# A Postgres on Grafana's network (as "postgres"), with the cost database and
+# its read-only user made by the real cost-sync over an empty fake bucket.
+start_postgres() {
+  docker network create "$network" > /dev/null
+  docker run -d --name "$postgres" --network "$network" --network-alias postgres \
+    -e POSTGRES_USER=monitoring -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=grafana "$postgres_image" > /dev/null
+  for _ in $(seq 1 60); do
+    docker exec "$postgres" pg_isready -U monitoring -d grafana > /dev/null 2>&1 && break
+    sleep 1
+  done
+  local node="$scratch/cost-node"
+  mkdir -p "$node/root/data/config/current/cost-sync" "$node/root/data/secrets" "$node/s3/acme-billing" "$node/bin" "$node/textfile"
+  printf '{"bucket": "acme-billing", "prefix": "normalized", "providers": ["aws"], "run_join_tags": ["RunId", "TaskId"]}' \
+    > "$node/root/data/config/current/cost-sync/config.json"
+  printf '%s' "$reader_password" > "$node/root/data/secrets/COST_READER_PASSWORD"
+  printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$here/fake_aws_s3.py" > "$node/bin/aws"
+  chmod +x "$node/bin/aws"
+  PATH="$node/bin:$PATH" MONITORING_ROOT="$node/root" MONITORING_TEXTFILE_DIR="$node/textfile" FAKE_S3_ROOT="$node/s3" \
+    MONITORING_PSQL="docker exec -i $postgres psql -U monitoring -v ON_ERROR_STOP=1" \
+    python3 "$mod/files/monitoring-cost-sync.py" || fail "cost-sync couldn't set up the cost database"
+}
+
 start_grafana() { # <phase>
   local release="$scratch/$1/release" env=()
   for var in $(python3 "$here/grafana_smoke.py" env "$release"); do
     env+=(-e "$var=https://hooks.slack.invalid/smoke")
   done
+  env+=(-e "COST_READER_PASSWORD=$reader_password")
   docker rm -f "$name" > /dev/null 2>&1 || true
   docker run -d --name "$name" \
     -e GF_SECURITY_ADMIN_USER=smoke -e "GF_SECURITY_ADMIN_PASSWORD=$password" \
@@ -139,7 +170,7 @@ start_grafana() { # <phase>
     -v "$release/grafana/provisioning:/etc/grafana/provisioning:ro" \
     -v "$release/grafana/dashboards:/var/lib/grafana/dashboards:ro" \
     -v "$volume:/var/lib/grafana" \
-    -p 127.0.0.1::3000 "$grafana_image" > /dev/null
+    --network "$network" -p 127.0.0.1::3000 "$grafana_image" > /dev/null
   url="http://$(docker port "$name" 3000/tcp | head -1)"
   for _ in $(seq 1 60); do
     curl -fsS "$url/api/health" > /dev/null 2>&1 && return 0
@@ -157,6 +188,8 @@ check_grafana() { # <phase>
     fail "Grafana logged a provisioning error ($1)"
   fi
 }
+
+start_postgres
 
 for phase in phase1 phase2; do
   render "$phase" "$("${phase}_args")"

@@ -216,3 +216,34 @@ variable "slack" {
     error_message = "Every slack route names one of slack.channels."
   }
 }
+
+variable "cost" {
+  description = "The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), and the tags a task run's cost rows are joined on. null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it."
+  type = object({
+    bucket            = string
+    normalized_prefix = optional(string, "normalized")
+    providers         = optional(set(string), ["aws", "databricks"])
+    run_join_tags     = optional(list(string), ["RunId", "TaskId"])
+  })
+  default = null
+
+  validation {
+    condition     = var.cost == null ? true : can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.cost.bucket))
+    error_message = "cost.bucket is an S3 bucket name."
+  }
+
+  validation {
+    condition     = var.cost == null ? true : can(regex("^[^/](.*[^/])?$", var.cost.normalized_prefix))
+    error_message = "cost.normalized_prefix has no leading or trailing /."
+  }
+
+  validation {
+    condition     = var.cost == null ? true : length(var.cost.providers) > 0 && alltrue([for p in var.cost.providers : contains(["aws", "databricks"], p)])
+    error_message = "cost.providers is aws, databricks or both."
+  }
+
+  validation {
+    condition     = var.cost == null ? true : length(var.cost.run_join_tags) > 0
+    error_message = "cost.run_join_tags names at least one tag."
+  }
+}

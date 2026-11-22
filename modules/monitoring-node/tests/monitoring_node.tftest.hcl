@@ -627,3 +627,87 @@ run "rejects_a_prometheus_size_cap_of_zero" {
 
   expect_failures = [var.prometheus_retention]
 }
+
+run "with_cost_the_node_reads_only_normalized_data" {
+  command = plan
+
+  variables {
+    cost = { bucket = "acme-billing" }
+  }
+
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "ReadNormalizedCost"]).Action == "s3:GetObject" && one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "ReadNormalizedCost"]).Resource == "arn:aws:s3:::acme-billing/normalized/*"
+    error_message = "the node reads the normalized objects and nothing else in the bucket"
+  }
+
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "ListNormalizedCost"]).Action == "s3:ListBucket" && one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "ListNormalizedCost"]).Resource == "arn:aws:s3:::acme-billing" && jsonencode(one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "ListNormalizedCost"]).Condition) == jsonencode({ StringLike = { "s3:prefix" = ["normalized/*"] } })
+    error_message = "and lists only under normalized/"
+  }
+}
+
+run "without_cost_the_node_reads_no_billing_data" {
+  command = plan
+
+  assert {
+    condition     = length([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if contains(["ReadNormalizedCost", "ListNormalizedCost"], s.Sid)]) == 0 && !contains(keys(local.bundle.files), "cost-sync/config.json") && local.bundle.generated == ["POSTGRES_PASSWORD"]
+    error_message = "a host-only node has no cost access, config or reader secret"
+  }
+}
+
+run "with_cost_the_bundle_configures_cost_sync" {
+  command = plan
+
+  variables {
+    cost = { bucket = "acme-billing" }
+  }
+
+  assert {
+    condition     = jsonencode(jsondecode(local.bundle.files["cost-sync/config.json"])) == jsonencode({ bucket = "acme-billing", prefix = "normalized", providers = ["aws", "databricks"], run_join_tags = ["RunId", "TaskId"] })
+    error_message = "cost-sync reads its bucket, prefix, providers and join tags from the bundle"
+  }
+
+  assert {
+    condition     = local.bundle.files["cost-sync/monitoring-cost-sync.py"] == file("files/monitoring-cost-sync.py")
+    error_message = "the script itself travels in the bundle, so a change to it never replaces the instance"
+  }
+
+  assert {
+    condition     = contains(local.bundle.generated, "COST_READER_PASSWORD") && yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.COST_READER_PASSWORD == "$${COST_READER_PASSWORD:?}"
+    error_message = "Grafana's read-only cost user gets a generated password"
+  }
+}
+
+run "the_user_data_runs_cost_sync_every_30_minutes" {
+  command = plan
+
+  assert {
+    condition     = strcontains(aws_instance.this.user_data, "monitoring-cost-sync.timer") && strcontains(aws_instance.this.user_data, "OnUnitActiveSec=30min") && strcontains(aws_instance.this.user_data, "OnBootSec=2min")
+    error_message = "cost-sync runs at boot and every 30 minutes"
+  }
+
+  assert {
+    condition     = strcontains(aws_instance.this.user_data, "ConditionPathExists=/data/config/current/cost-sync/monitoring-cost-sync.py") && strcontains(aws_instance.this.user_data, "ExecStart=/usr/bin/python3 /data/config/current/cost-sync/monitoring-cost-sync.py")
+    error_message = "it runs the bundle's script, and is skipped while cost is off"
+  }
+}
+
+run "rejects_an_unknown_provider" {
+  command = plan
+
+  variables {
+    cost = { bucket = "acme-billing", providers = ["gcp"] }
+  }
+
+  expect_failures = [var.cost]
+}
+
+run "rejects_a_prefix_with_slashes" {
+  command = plan
+
+  variables {
+    cost = { bucket = "acme-billing", normalized_prefix = "/normalized/" }
+  }
+
+  expect_failures = [var.cost]
+}

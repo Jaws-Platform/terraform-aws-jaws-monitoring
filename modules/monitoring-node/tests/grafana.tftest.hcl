@@ -952,3 +952,38 @@ run "the_patch_reminder_repeats_daily" {
     error_message = "a due AMI bump can stay due for days: its reminder goes to the host channel once a day, not every 4 hours"
   }
 }
+
+run "with_cost_grafana_reads_the_cost_database" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = jsonencode(one([for d in yamldecode(output.files["grafana/provisioning/datasources/datasources.yaml"]).datasources : { type = d.type, url = d.url, user = d.user, database = d.jsonData.database, sslmode = d.jsonData.sslmode, password = d.secureJsonData.password } if d.uid == "cost"])) == jsonencode({ type = "grafana-postgresql-datasource", url = "postgres:5432", user = "cost_reader", database = "cost", sslmode = "disable", password = "$COST_READER_PASSWORD" })
+    error_message = "Grafana reads the cost database as its read-only user, with the password from its environment"
+  }
+}
+
+run "without_cost_there_is_no_cost_database_to_read" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = length([for d in yamldecode(output.files["grafana/provisioning/datasources/datasources.yaml"]).datasources : d if d.uid == "cost"]) == 0
+    error_message = "a host-only node has no cost data source"
+  }
+
+  assert {
+    condition     = jsonencode(yamldecode(output.files["grafana/provisioning/datasources/datasources.yaml"]).deleteDatasources) == jsonencode([{ name = "Cost", orgId = 1 }])
+    error_message = "and deletes an earlier one: Grafana 13.3 keeps a data source dropped from the file, prune or not"
+  }
+}

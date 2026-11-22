@@ -87,8 +87,34 @@ write_files:
       [Install]
       WantedBy=timers.target
 
+  # cost-sync's script and config travel in the bundle; without them (cost is
+  # off) the service is skipped.
+  - path: /etc/systemd/system/monitoring-cost-sync.service
+    content: |
+      [Unit]
+      Description=Load the normalized cost data into Postgres
+      Requires=docker.service
+      After=docker.service monitoring-reconcile.service
+      ConditionPathExists=/data/config/current/cost-sync/monitoring-cost-sync.py
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/python3 /data/config/current/cost-sync/monitoring-cost-sync.py
+
+  - path: /etc/systemd/system/monitoring-cost-sync.timer
+    content: |
+      [Unit]
+      Description=Sync the cost database at boot and every 30 minutes
+
+      [Timer]
+      OnBootSec=2min
+      OnUnitActiveSec=30min
+
+      [Install]
+      WantedBy=timers.target
+
 runcmd:
   - systemctl daemon-reload
   - systemctl enable --now monitoring-bootstrap.service
   - systemctl enable --now docker.service
-  - systemctl enable --now monitoring-reconcile.timer monitoring-release-check.timer
+  - systemctl enable --now monitoring-reconcile.timer monitoring-release-check.timer monitoring-cost-sync.timer

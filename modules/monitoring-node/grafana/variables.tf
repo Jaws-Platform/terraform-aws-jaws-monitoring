@@ -40,6 +40,14 @@ variable "thresholds" {
   })
 }
 
+variable "cost" {
+  description = "The cost data on the node (its providers), already checked; null for a host-only node."
+  type = object({
+    providers = set(string)
+  })
+  default = null
+}
+
 variable "slack" {
   description = "Slack channels (name => SSM parameter of its webhook) and routes (area => channel), already checked; null for no notifications."
   type = object({
