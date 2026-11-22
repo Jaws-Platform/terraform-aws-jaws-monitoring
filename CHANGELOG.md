@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.2.0...v0.3.0) (2026-11-22)
+
+
+### Features
+
+* add the monitoring node ([#6](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/issues/6)) ([2e11926](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/commit/2e11926abd5726c6076c8009fa6ceca57e05f9f7))
+
 ## [0.2.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.1.0...v0.2.0) (2026-11-21)
 
 
