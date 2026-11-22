@@ -1,0 +1,94 @@
+#cloud-config
+# The monitoring node's bootstrap. Everything that must happen at every boot
+# lives in systemd units; runcmd only enables them on the first boot.
+packages:
+  - docker
+
+write_files:
+  - path: /etc/monitoring/node.env
+    permissions: "0644"
+    content: |
+      ${indent(6, node_env)}
+
+  - path: /usr/local/bin/monitoring-bootstrap
+    permissions: "0755"
+    encoding: gz+b64
+    content: ${bootstrap_script}
+
+  - path: /usr/local/bin/monitoring-reconcile
+    permissions: "0755"
+    encoding: gz+b64
+    content: ${reconcile_script}
+
+  - path: /usr/local/bin/monitoring-release-check
+    permissions: "0755"
+    encoding: gz+b64
+    content: ${release_check_script}
+
+  - path: /etc/systemd/system/monitoring-bootstrap.service
+    content: |
+      [Unit]
+      Description=Prepare the monitoring node: /data, swap, Docker, Compose, DNS
+      Wants=network-online.target
+      After=network-online.target
+      Before=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/bin/monitoring-bootstrap
+      Restart=on-failure
+      RestartSec=30
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/monitoring-reconcile.service
+    content: |
+      [Unit]
+      Description=Converge the monitoring stack to its config bundle
+      Requires=docker.service monitoring-bootstrap.service
+      After=docker.service monitoring-bootstrap.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/monitoring-reconcile
+
+  - path: /etc/systemd/system/monitoring-reconcile.timer
+    content: |
+      [Unit]
+      Description=Converge the monitoring stack at boot and every 5 minutes
+
+      [Timer]
+      OnBootSec=1min
+      OnUnitActiveSec=5min
+
+      [Install]
+      WantedBy=timers.target
+
+  - path: /etc/systemd/system/monitoring-release-check.service
+    content: |
+      [Unit]
+      Description=Tell Prometheus whether a newer Amazon Linux release exists
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/monitoring-release-check
+
+  - path: /etc/systemd/system/monitoring-release-check.timer
+    content: |
+      [Unit]
+      Description=Check for a newer Amazon Linux release at boot and every 6 hours
+
+      [Timer]
+      OnBootSec=5min
+      OnUnitActiveSec=6h
+
+      [Install]
+      WantedBy=timers.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable --now monitoring-bootstrap.service
+  - systemctl enable --now docker.service
+  - systemctl enable --now monitoring-reconcile.timer monitoring-release-check.timer

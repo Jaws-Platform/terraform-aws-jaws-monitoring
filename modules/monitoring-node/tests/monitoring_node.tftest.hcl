@@ -288,3 +288,27 @@ run "rejects_a_tiny_data_volume" {
 
   expect_failures = [var.data_volume_gb]
 }
+
+run "the_user_data_bootstraps_every_boot" {
+  command = plan
+
+  assert {
+    condition     = strcontains(aws_instance.this.user_data, "COMPOSE_VERSION='v5.6.1'") && strcontains(aws_instance.this.user_data, "COMPOSE_SHA256='42cfa75f51ad0ccf290bad37899e0038a8c10a0069e85233ecc1d53e3ff1347d'")
+    error_message = "the Compose plugin is pinned by version and checksum"
+  }
+
+  assert {
+    condition     = strcontains(aws_instance.this.user_data, "PARAMETER_PREFIX='/acme-monitoring/node'") && strcontains(aws_instance.this.user_data, "DATA_VOLUME_ID='vol-0123456789abcdef0'") && strcontains(aws_instance.this.user_data, "CONFIG_BUCKET='acme-monitoring-config-123456789012'")
+    error_message = "node.env names the parameters, the data volume and the config bucket"
+  }
+
+  assert {
+    condition     = strcontains(aws_instance.this.user_data, "Before=docker.service") && strcontains(aws_instance.this.user_data, "OnUnitActiveSec=5min") && strcontains(aws_instance.this.user_data, "OnUnitActiveSec=6h")
+    error_message = "the bootstrap runs before Docker at every boot; the reconciler every 5 minutes, the release check every 6 hours"
+  }
+
+  assert {
+    condition     = startswith(aws_instance.this.user_data, "#cloud-config") && length(aws_instance.this.user_data) < 16384
+    error_message = "cloud-config, within EC2's 16 KB user data limit"
+  }
+}
