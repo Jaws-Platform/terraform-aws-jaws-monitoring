@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.6.0...v0.7.0) (2026-11-22)
+
+
+### Features
+
+* **monitoring-node:** add the cost project, databricks and tasks dashboards ([#15](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/issues/15)) ([5ff7fb4](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/commit/5ff7fb4c819c914a9e351814f74dc79478050568))
+
 ## [0.6.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.5.0...v0.6.0) (2026-11-22)
 
 

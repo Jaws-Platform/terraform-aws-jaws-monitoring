@@ -77,7 +77,7 @@ removed {
 ```hcl
 module "billing_bucket" {
   source  = "Jaws-Platform/jaws-monitoring/aws//modules/billing-bucket"
-  version = "0.6.0" # x-release-please-version
+  version = "0.7.0" # x-release-please-version
 
   bucket_name                   = "acme-billing"
   aws_export_source_account_ids = ["111111111111"]
