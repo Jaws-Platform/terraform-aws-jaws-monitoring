@@ -780,3 +780,121 @@ run "rejects_an_anomaly_ratio_of_one" {
 
   expect_failures = [var.thresholds]
 }
+
+run "without_a_schedule_the_node_runs_all_day" {
+  command = plan
+
+  assert {
+    condition     = length(aws_scheduler_schedule.start) == 0 && length(aws_scheduler_schedule.stop) == 0 && length(aws_iam_role.schedule) == 0
+    error_message = "no schedule means always on: nothing starts or stops the node"
+  }
+}
+
+run "a_schedule_starts_and_stops_the_node" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = aws_scheduler_schedule.start[0].schedule_expression == "cron(0 8 ? * MON,TUE,WED,THU,FRI,SAT,SUN *)" && aws_scheduler_schedule.stop[0].schedule_expression == "cron(0 0 ? * TUE,WED,THU,FRI,SAT,SUN,MON *)"
+    error_message = "it starts at 08:00 each day, and a 24:00 stop fires at 00:00 on each next day"
+  }
+
+  assert {
+    condition     = alltrue([for s in [aws_scheduler_schedule.start[0], aws_scheduler_schedule.stop[0]] : s.schedule_expression_timezone == "America/Denver" && s.flexible_time_window[0].mode == "OFF"])
+    error_message = "both run on the dot, in the schedule's time zone"
+  }
+
+  assert {
+    condition     = aws_scheduler_schedule.start[0].target[0].arn == "arn:aws:scheduler:::aws-sdk:ec2:startInstances" && aws_scheduler_schedule.stop[0].target[0].arn == "arn:aws:scheduler:::aws-sdk:ec2:stopInstances" && alltrue([for s in [aws_scheduler_schedule.start[0], aws_scheduler_schedule.stop[0]] : s.target[0].input == jsonencode({ InstanceIds = ["i-0123456789abcdef0"] })])
+    error_message = "they start and stop this one instance"
+  }
+}
+
+run "an_evening_stop_keeps_its_days" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri"], on = "08:00", off = "20:00" }
+  }
+
+  assert {
+    condition     = aws_scheduler_schedule.stop[0].schedule_expression == "cron(0 20 ? * MON,TUE,WED,THU,FRI *)"
+    error_message = "a stop before midnight runs on the same days as the start"
+  }
+}
+
+run "the_scheduler_may_start_and_stop_only_this_instance" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = jsonencode([for st in jsondecode(aws_iam_role_policy.schedule[0].policy).Statement : [st.Effect, sort(flatten([st.Action])), flatten([st.Resource])]]) == jsonencode([["Allow", ["ec2:StartInstances", "ec2:StopInstances"], [aws_instance.this.arn]]])
+    error_message = "the scheduler's role starts and stops this instance, and nothing else"
+  }
+}
+
+run "rejects_half_hours" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["mon"], on = "08:30", off = "20:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_an_overnight_window" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["mon"], on = "22:00", off = "06:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_fewer_than_4_hours_on" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["mon"], on = "08:00", off = "11:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_an_unknown_day" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["funday"], on = "08:00", off = "20:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_a_repeated_day" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["mon", "mon"], on = "08:00", off = "20:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_no_days" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = [], on = "08:00", off = "20:00" }
+  }
+
+  expect_failures = [var.schedule]
+}

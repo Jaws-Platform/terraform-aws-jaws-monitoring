@@ -111,6 +111,37 @@ variable "snapshots" {
   default = {}
 }
 
+variable "schedule" {
+  description = "Off-hours: the node runs from on to off on the given days, in timezone (an IANA name), and is stopped otherwise. Whole hours, on before off, off may be 24:00 (midnight at the end of the day), at least 4 hours on, days from mon to sun. Avoid 01:00-03:00, when daylight saving changes. null runs the node all day."
+  type = object({
+    timezone = string
+    days     = list(string)
+    on       = string
+    off      = string
+  })
+  default = null
+
+  validation {
+    condition     = var.schedule == null ? true : can(regex("^([01][0-9]|2[0-3]):00$", var.schedule.on)) && can(regex("^(([01][0-9]|2[0-3]):00|24:00)$", var.schedule.off))
+    error_message = "schedule.on and schedule.off are whole hours, HH:00 (off may be 24:00)."
+  }
+
+  validation {
+    condition     = var.schedule == null ? true : try(tonumber(substr(var.schedule.off, 0, 2)) - tonumber(substr(var.schedule.on, 0, 2)) >= 4, false)
+    error_message = "schedule.on is before schedule.off on the same day (no overnight windows), with at least 4 hours on."
+  }
+
+  validation {
+    condition     = var.schedule == null ? true : length(var.schedule.days) > 0 && length(distinct(var.schedule.days)) == length(var.schedule.days) && alltrue([for d in var.schedule.days : contains(["mon", "tue", "wed", "thu", "fri", "sat", "sun"], d)])
+    error_message = "schedule.days is one or more unique days: mon, tue, wed, thu, fri, sat, sun."
+  }
+
+  validation {
+    condition     = var.schedule == null ? true : length(trimspace(var.schedule.timezone)) > 0
+    error_message = "schedule.timezone is an IANA time zone, such as America/Denver."
+  }
+}
+
 variable "images" {
   description = "Container images to use instead of the module's digest-pinned defaults, by service name (see the README)."
   type        = map(string)
