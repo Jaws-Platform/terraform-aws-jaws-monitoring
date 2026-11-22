@@ -102,13 +102,18 @@ variable "prometheus_retention" {
 }
 
 variable "snapshots" {
-  description = "Daily snapshots of the data volume (Data Lifecycle Manager), at time_utc, keeping the last `keep`."
+  description = "Daily snapshots of the data volume (AWS Backup), kept `keep` days. Without a schedule they run at time_utc (HH:MM); with one, an hour after the stop in the schedule's time zone (03:00 when that falls in 01:00-02:59), so they capture disks shut down cleanly."
   type = object({
     enabled  = optional(bool, false)
     time_utc = optional(string, "03:00")
     keep     = optional(number, 7)
   })
   default = {}
+
+  validation {
+    condition     = can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.snapshots.time_utc)) && var.snapshots.keep >= 1
+    error_message = "snapshots.time_utc is HH:MM (UTC), and snapshots.keep is at least 1 day."
+  }
 }
 
 variable "schedule" {

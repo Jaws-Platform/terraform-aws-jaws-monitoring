@@ -235,16 +235,16 @@ run "the_parameters_name_the_bundle" {
   }
 }
 
-run "snapshots_are_opt_in" {
+run "without_snapshots_there_is_no_backup_plan" {
   command = plan
 
   assert {
-    condition     = length(aws_dlm_lifecycle_policy.snapshots) == 0
+    condition     = length(aws_backup_plan.snapshots) == 0 && length(aws_backup_vault.snapshots) == 0 && length(aws_backup_selection.snapshots) == 0
     error_message = "no snapshots unless asked for"
   }
 }
 
-run "snapshots_when_enabled_keep_a_week" {
+run "snapshots_without_a_schedule_run_at_time_utc" {
   command = plan
 
   variables {
@@ -252,11 +252,75 @@ run "snapshots_when_enabled_keep_a_week" {
   }
 
   assert {
-    condition = (length(aws_dlm_lifecycle_policy.snapshots) == 1
-      && aws_dlm_lifecycle_policy.snapshots[0].policy_details[0].target_tags == tomap({ Name = "acme-monitoring-data" })
-      && aws_dlm_lifecycle_policy.snapshots[0].policy_details[0].schedule[0].create_rule[0].times == tolist(["03:00"])
-    && aws_dlm_lifecycle_policy.snapshots[0].policy_details[0].schedule[0].retain_rule[0].count == 7)
-    error_message = "one daily snapshot of the data volume at 03:00 UTC, the last 7 kept"
+    condition     = one(aws_backup_plan.snapshots[0].rule).schedule == "cron(0 3 ? * * *)" && one(aws_backup_plan.snapshots[0].rule).schedule_expression_timezone == "Etc/UTC"
+    error_message = "one daily snapshot at 03:00 UTC"
+  }
+}
+
+run "with_a_schedule_snapshots_run_after_the_stop" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true }
+    schedule  = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = one(aws_backup_plan.snapshots[0].rule).schedule == "cron(0 3 ? * * *)" && one(aws_backup_plan.snapshots[0].rule).schedule_expression_timezone == "America/Denver"
+    error_message = "a stop at midnight snapshots at 03:00 local: an hour after it, past the hours daylight saving changes"
+  }
+}
+
+run "an_evening_stop_snapshots_an_hour_later" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true }
+    schedule  = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri"], on = "08:00", off = "20:00" }
+  }
+
+  assert {
+    condition     = one(aws_backup_plan.snapshots[0].rule).schedule == "cron(0 21 ? * * *)"
+    error_message = "a 20:00 stop snapshots at 21:00"
+  }
+}
+
+run "snapshots_keep_the_last_n_days" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true, keep = 7 }
+  }
+
+  assert {
+    condition     = one(one(aws_backup_plan.snapshots[0].rule).lifecycle).delete_after == 7 && one(aws_backup_plan.snapshots[0].rule).target_vault_name == aws_backup_vault.snapshots[0].name
+    error_message = "each daily snapshot is kept 7 days, in the node's vault"
+  }
+}
+
+run "snapshots_back_up_only_the_data_volume" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true }
+  }
+
+  assert {
+    condition     = tolist(aws_backup_selection.snapshots[0].resources) == tolist([aws_ebs_volume.data.arn])
+    error_message = "the backup takes the data volume, not the root volume"
+  }
+}
+
+run "the_snapshot_vault_keeps_its_recovery_points" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true }
+  }
+
+  assert {
+    condition     = aws_backup_vault.snapshots[0].force_destroy == false && aws_backup_vault.snapshots[0].name == "acme-monitoring-snapshots"
+    error_message = "a stray destroy never deletes the backups: the vault refuses while it holds any"
   }
 }
 
