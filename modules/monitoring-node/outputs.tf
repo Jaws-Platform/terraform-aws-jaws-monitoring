@@ -42,3 +42,8 @@ output "grafana_url" {
   description = "Where Grafana is: the domain over HTTPS, or a Session Manager port forward to localhost:3000."
   value       = var.domain == null ? "http://localhost:3000 (aws ssm start-session --document-name AWS-StartPortForwardingSession --parameters portNumber=3000,localPortNumber=3000)" : "https://${var.domain}"
 }
+
+output "watchdog_function_name" {
+  description = "The watchdog Lambda's name, to invoke it by hand (null without Slack)."
+  value       = local.watched ? aws_lambda_function.watchdog[0].function_name : null
+}

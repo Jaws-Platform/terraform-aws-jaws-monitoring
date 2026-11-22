@@ -41,6 +41,18 @@ mock_provider "aws" {
       id = "vol-0123456789abcdef0"
     }
   }
+
+  mock_resource "aws_sns_topic" {
+    defaults = {
+      arn = "arn:aws:sns:us-east-1:123456789012:acme-monitoring-watchdog"
+    }
+  }
+
+  mock_resource "aws_lambda_function" {
+    defaults = {
+      arn = "arn:aws:lambda:us-east-1:123456789012:function:acme-monitoring-watchdog"
+    }
+  }
 }
 
 variables {
@@ -961,4 +973,80 @@ run "rejects_no_days" {
   }
 
   expect_failures = [var.schedule]
+}
+
+run "without_slack_there_is_no_watchdog" {
+  command = plan
+
+  assert {
+    condition     = length(aws_lambda_function.watchdog) == 0 && length(aws_cloudwatch_metric_alarm.system_status) == 0 && length(aws_cloudwatch_metric_alarm.instance_status) == 0 && length(aws_sns_topic.watchdog) == 0 && length(aws_scheduler_schedule.watchdog) == 0
+    error_message = "the watchdog is on only with Slack, which it reports to"
+  }
+}
+
+run "with_slack_the_watchdog_watches" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/monitoring/slack/platform" }, routes = { host = "platform" } }
+  }
+
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.system_status[0].metric_name == "StatusCheckFailed_System" && contains(aws_cloudwatch_metric_alarm.system_status[0].alarm_actions, "arn:aws:automate:us-east-1:ec2:recover") && aws_cloudwatch_metric_alarm.instance_status[0].metric_name == "StatusCheckFailed_Instance" && contains(aws_cloudwatch_metric_alarm.instance_status[0].alarm_actions, "arn:aws:automate:us-east-1:ec2:reboot")
+    error_message = "a failed system check recovers the instance, a failed instance check reboots it"
+  }
+
+  assert {
+    condition     = alltrue([for a in [aws_cloudwatch_metric_alarm.system_status[0], aws_cloudwatch_metric_alarm.instance_status[0]] : a.namespace == "AWS/EC2" && a.dimensions["InstanceId"] == "i-0123456789abcdef0" && contains(a.alarm_actions, aws_sns_topic.watchdog[0].arn) && tolist(a.ok_actions) == tolist([aws_sns_topic.watchdog[0].arn]) && a.treat_missing_data == "notBreaching" && a.period == 60 && a.evaluation_periods == 2])
+    error_message = "both tell the watchdog on alarm and on OK, and a scheduled stop (no data) is silent"
+  }
+
+  assert {
+    condition     = aws_lambda_function.watchdog[0].environment[0].variables["INSTANCE_ID"] == "i-0123456789abcdef0" && aws_lambda_function.watchdog[0].environment[0].variables["WEBHOOK_PARAMETER"] == "/acme/monitoring/slack/platform" && aws_lambda_function.watchdog[0].environment[0].variables["STATE_PARAMETER"] == "/acme-monitoring/node/watchdog-state" && aws_lambda_function.watchdog[0].environment[0].variables["ALARMS"] == "acme-monitoring-system-status,acme-monitoring-instance-status" && aws_lambda_function.watchdog[0].environment[0].variables["SCHEDULE"] == "" && aws_lambda_function.watchdog[0].environment[0].variables["DOMAIN"] == ""
+    error_message = "the watchdog knows its instance, the host channel's webhook, its state and its alarms"
+  }
+
+  assert {
+    condition     = aws_lambda_function.watchdog[0].runtime == "python3.13" && aws_lambda_function.watchdog[0].handler == "watchdog.handler" && aws_scheduler_schedule.watchdog[0].schedule_expression == "rate(5 minutes)" && aws_scheduler_schedule.watchdog[0].target[0].arn == aws_lambda_function.watchdog[0].arn
+    error_message = "it runs every 5 minutes"
+  }
+
+  assert {
+    condition     = aws_sns_topic_subscription.watchdog[0].protocol == "lambda" && aws_sns_topic_subscription.watchdog[0].endpoint == aws_lambda_function.watchdog[0].arn && aws_lambda_permission.watchdog_sns[0].principal == "sns.amazonaws.com"
+    error_message = "and at once when an alarm changes"
+  }
+}
+
+run "the_watchdog_reads_the_schedule_and_the_domain" {
+  command = plan
+
+  variables {
+    slack    = { channels = { platform = "/acme/monitoring/slack/platform" }, routes = { host = "platform" } }
+    domain   = "grafana.example.com"
+    zone_id  = "Z123"
+    schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = jsondecode(aws_lambda_function.watchdog[0].environment[0].variables["SCHEDULE"]) == { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" } && aws_lambda_function.watchdog[0].environment[0].variables["DOMAIN"] == "grafana.example.com"
+    error_message = "the watchdog judges the node by its schedule, and checks Grafana at its domain"
+  }
+}
+
+run "the_watchdog_may_read_only_its_webhook_and_state" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/monitoring/slack/platform" }, routes = { host = "platform" } }
+  }
+
+  assert {
+    condition     = jsonencode([for st in jsondecode(aws_iam_role_policy.watchdog[0].policy).Statement : sort(flatten([st.Resource])) if contains(flatten([st.Action]), "ssm:GetParameter")]) == jsonencode([sort(["arn:aws:ssm:us-east-1:123456789012:parameter/acme/monitoring/slack/platform", "arn:aws:ssm:us-east-1:123456789012:parameter/acme-monitoring/node/watchdog-state"])])
+    error_message = "it reads the host channel's webhook and its own state, nothing else"
+  }
+
+  assert {
+    condition     = jsonencode([for st in jsondecode(aws_iam_role_policy.watchdog[0].policy).Statement : flatten([st.Resource]) if contains(flatten([st.Action]), "ssm:PutParameter")]) == jsonencode([["arn:aws:ssm:us-east-1:123456789012:parameter/acme-monitoring/node/watchdog-state"]])
+    error_message = "it writes only its state"
+  }
 }
