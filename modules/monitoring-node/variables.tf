@@ -142,6 +142,11 @@ variable "schedule" {
   }
 
   validation {
+    condition     = var.schedule == null ? true : !(var.schedule.on == "00:00" && var.schedule.off == "24:00")
+    error_message = "A whole-day schedule (00:00 to 24:00) would start and stop the node at the same midnight; leave schedule null to run all day."
+  }
+
+  validation {
     condition     = var.schedule == null ? true : length(var.schedule.days) > 0 && length(distinct(var.schedule.days)) == length(var.schedule.days) && alltrue([for d in var.schedule.days : contains(["mon", "tue", "wed", "thu", "fri", "sat", "sun"], d)])
     error_message = "schedule.days is one or more unique days: mon, tue, wed, thu, fri, sat, sun."
   }

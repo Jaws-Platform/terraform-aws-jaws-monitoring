@@ -965,6 +965,16 @@ run "rejects_a_repeated_day" {
   expect_failures = [var.schedule]
 }
 
+run "rejects_a_whole_day_schedule" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["mon", "tue", "wed", "thu", "fri"], on = "00:00", off = "24:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
 run "rejects_no_days" {
   command = plan
 

@@ -9,7 +9,7 @@ It posts to the host channel's Slack webhook when the node:
 - is running in its off window: a warning, outside the 15 minutes after a
   scheduled stop (a stop that failed quietly costs money);
 - with a domain, doesn't answer https://<domain>/api/health: critical, on 2
-  checks in a row;
+  checks in a row, never in the 15 minutes after any start;
 - fails an EC2 status check: critical, while its alarm is in ALARM.
 
 A problem posts once, again every 4 hours while it lasts, and once when it
@@ -171,13 +171,18 @@ def _load_state(ssm, name: str) -> dict:
         return {}
 
 
-def _instance_state(ec2, instance_id: str) -> str:
+def _instance(ec2, instance_id: str) -> Tuple[str, Optional[datetime]]:
+    """The instance's state, and when it last started (LaunchTime is reset by
+    every start, not by a reboot)."""
     try:
         reservations = ec2.describe_instances(InstanceIds=[instance_id])["Reservations"]
-        return reservations[0]["Instances"][0]["State"]["Name"] if reservations else "missing"
+        if not reservations:
+            return "missing", None
+        instance = reservations[0]["Instances"][0]
+        return instance["State"]["Name"], instance.get("LaunchTime")
     except Exception as error:  # an instance that's gone reads as missing
         if "InvalidInstanceID" in str(error):
-            return "missing"
+            return "missing", None
         raise
 
 
@@ -192,13 +197,17 @@ def handler(event, context, clients: Optional[Dict[str, object]] = None) -> dict
     now: datetime = clients["now"]()  # type: ignore[operator]
 
     state = _load_state(clients["ssm"], env["STATE_PARAMETER"])
-    instance_state = _instance_state(clients["ec2"], instance_id)
+    instance_state, launched = _instance(clients["ec2"], instance_id)
     names = [n for n in env.get("ALARMS", "").split(",") if n]
     found = {a["AlarmName"]: a["StateValue"] for a in clients["cloudwatch"].describe_alarms(AlarmNames=names)["MetricAlarms"]} if names else {}  # type: ignore[attr-defined]
     alarms = {key: found.get(name, "OK") for key, name in zip(ALARM_KEYS, names)}
 
+    # Any start, scheduled or not (an apply that replaces the instance, a manual
+    # start), pulls images and bootstraps Caddy before Grafana answers.
+    just_started = launched is not None and now - launched < timedelta(minutes=GRACE_MINUTES)
     health_ok = None
-    if domain and instance_state == "running" and should_run(now, schedule) and not in_grace(now, schedule):
+    if domain and instance_state == "running" and should_run(now, schedule) and not in_grace(now, schedule) \
+            and not just_started:
         check: Callable[[str], bool] = clients["http"]  # type: ignore[assignment]
         health_ok = check(f"https://{domain}/api/health")
 

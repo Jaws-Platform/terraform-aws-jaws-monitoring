@@ -133,11 +133,12 @@ class FakeSSM:
 
 
 class FakeEC2:
-    def __init__(self, state):
-        self.state = state
+    def __init__(self, state, launched="2026-11-20T00:00:00Z"):
+        self.state, self.launched = state, utc(launched)
 
     def describe_instances(self, InstanceIds):
-        return {"Reservations": [{"Instances": [{"InstanceId": InstanceIds[0], "State": {"Name": self.state}}]}]}
+        return {"Reservations": [{"Instances": [{"InstanceId": InstanceIds[0], "State": {"Name": self.state},
+                                                 "LaunchTime": self.launched}]}]}
 
 
 class FakeCloudWatch:
@@ -150,13 +151,37 @@ ENV = {"NAME": "acme", "INSTANCE_ID": "i-1", "SCHEDULE": "", "DOMAIN": "", "WEBH
 
 
 class HandlerTest(unittest.TestCase):
-    def run_handler(self, ssm, state="stopped", event=None, post=None, now="2026-11-23T09:00:00Z"):
-        posted = []
-        clients = {"ec2": FakeEC2(state), "cloudwatch": FakeCloudWatch(), "ssm": ssm, "http": lambda url: True,
+    def run_handler(self, ssm, state="stopped", event=None, post=None, now="2026-11-23T09:00:00Z", env=None,
+                    launched="2026-11-20T00:00:00Z", health=True):
+        posted, checked = [], []
+
+        def http(url):
+            checked.append(url)
+            return health
+
+        clients = {"ec2": FakeEC2(state, launched), "cloudwatch": FakeCloudWatch(), "ssm": ssm, "http": http,
                    "post": post or (lambda url, text: posted.append((url, text))), "now": lambda: utc(now)}
-        with mock.patch.dict(os.environ, ENV, clear=False):
+        with mock.patch.dict(os.environ, {**ENV, **(env or {})}, clear=False):
             watchdog.handler(event or {}, None, clients)
+        self.checked = checked
         return posted
+
+    def test_a_just_launched_node_is_not_checked_for_health(self):
+        # An apply that replaces the instance, a manual start, or a 24/7 node's
+        # restart: no scheduled start, but images are still pulling.
+        ssm = FakeSSM()
+        self.run_handler(ssm, state="running", env={"DOMAIN": "grafana.example.com"}, launched="2026-11-23T08:55:00Z",
+                         health=False)
+        self.assertEqual(self.checked, [])
+        self.run_handler(ssm, state="running", env={"DOMAIN": "grafana.example.com"}, launched="2026-11-23T08:40:00Z",
+                         health=False, now="2026-11-23T09:05:00Z")
+        self.assertEqual(self.checked, ["https://grafana.example.com/api/health"])
+
+    def test_health_is_not_checked_while_the_node_should_be_off(self):
+        ssm = FakeSSM()
+        self.run_handler(ssm, state="running", now="2026-11-23T10:00:00Z",  # 03:00 in Denver
+                         env={"DOMAIN": "grafana.example.com", "SCHEDULE": json.dumps(JAWS)}, health=False)
+        self.assertEqual(self.checked, [])
 
     def test_unreadable_state_counts_as_empty(self):
         ssm = FakeSSM(state="{not json")
