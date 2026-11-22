@@ -857,6 +857,15 @@ run "rejects_an_anomaly_ratio_of_one" {
   expect_failures = [var.thresholds]
 }
 
+run "the_pinned_image_resolves_after_it_is_deprecated" {
+  command = plan
+
+  assert {
+    condition     = data.aws_ami.this.include_deprecated == true
+    error_message = "the AMI is pinned by name, and Amazon deprecates old images: a pinned one must keep resolving until a PR bumps it"
+  }
+}
+
 run "without_a_schedule_the_node_runs_all_day" {
   command = plan
 
