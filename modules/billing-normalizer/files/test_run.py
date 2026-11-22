@@ -1,3 +1,6 @@
+import csv
+import gzip
+import io
 import json
 import unittest
 from datetime import UTC, date, datetime, timedelta
@@ -21,6 +24,10 @@ AWS_KEY = "normalized/schema=focus-1.2/provider=aws/billing_period=2026-11/data.
 DATABRICKS_KEY = "normalized/schema=focus-1.2/provider=databricks/billing_period=2026-11/data.parquet"
 RUNS_KEY = "normalized/schema=runs-1/event_month=2026-11/data.parquet"
 RECORDS = ["normalized/_runs/20261121T120000Z.json", "normalized/_runs/latest.json"]
+
+
+def twin(key):
+    return key.replace("data.parquet", "data.csv.gz")
 
 _TS = pa.timestamp("ms", tz="UTC")
 _MAP = pa.map_(pa.string(), pa.string())
@@ -107,7 +114,8 @@ class RunTest(unittest.TestCase):
         record = run(store, CONFIG, NOW)
 
         # Runs first: the small, time-critical event table is written before the cost tables.
-        self.assertEqual(store.puts, [RUNS_KEY, AWS_KEY, DATABRICKS_KEY, *RECORDS])
+        self.assertEqual(store.puts, [twin(RUNS_KEY), RUNS_KEY, twin(AWS_KEY), AWS_KEY,
+                                      twin(DATABRICKS_KEY), DATABRICKS_KEY, *RECORDS])
         self.assertEqual(record["status"], "ok")
         self.assertEqual([(o["key"], o["rebuilt"]) for o in record["outputs"]],
                          [(RUNS_KEY, True), (AWS_KEY, True), (DATABRICKS_KEY, True)])
@@ -119,6 +127,20 @@ class RunTest(unittest.TestCase):
         [databricks_row] = read_rows(store.get(DATABRICKS_KEY))
         self.assertAlmostEqual(databricks_row["BilledCost"], 1.0)
         self.assertEqual(record["outputs"][2]["billed_cost"], 1.0)
+
+    def test_each_rebuilt_output_has_its_twin(self):
+        store = seeded_store()
+
+        run(store, CONFIG, NOW)
+
+        for key in (RUNS_KEY, AWS_KEY, DATABRICKS_KEY):
+            twin = key.replace("data.parquet", "data.csv.gz")
+            with self.subTest(key):
+                self.assertEqual(store.metadata(twin), store.metadata(key))
+                rows = list(csv.reader(io.StringIO(gzip.decompress(store.get(twin)).decode())))
+                self.assertEqual(len(rows) - 1, len(read_rows(store.get(key))))
+                # The twin goes first, so a Parquet signature only ever marks a complete output.
+                self.assertLess(store.puts.index(twin), store.puts.index(key))
 
     def test_a_second_run_without_new_deliveries_rewrites_nothing(self):
         store = seeded_store()
@@ -138,7 +160,7 @@ class RunTest(unittest.TestCase):
 
         run(store, CONFIG, NOW + timedelta(hours=1))
 
-        self.assertEqual(store.puts[0], AWS_KEY)
+        self.assertEqual(store.puts[:2], [twin(AWS_KEY), AWS_KEY])
         self.assertNotIn(DATABRICKS_KEY, store.puts)
         self.assertNotIn(RUNS_KEY, store.puts)
         self.assertNotIn(RUNS_KEY, store.puts)
@@ -149,10 +171,10 @@ class RunTest(unittest.TestCase):
         run(store, CONFIG, NOW)
         store.puts.clear()
 
-        with mock.patch("normalizer.schema.MAPPER_VERSION", "2"):
+        with mock.patch("normalizer.schema.MAPPER_VERSION", "3"):
             run(store, CONFIG, NOW + timedelta(hours=1))
 
-        self.assertEqual(store.puts[:3], [RUNS_KEY, AWS_KEY, DATABRICKS_KEY])
+        self.assertEqual(store.puts[:6], [twin(RUNS_KEY), RUNS_KEY, twin(AWS_KEY), AWS_KEY, twin(DATABRICKS_KEY), DATABRICKS_KEY])
 
     def test_empty_sources_write_only_a_run_record(self):
         store = FakeStore()

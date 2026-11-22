@@ -33,6 +33,19 @@ The FOCUS table has the FOCUS 1.2 columns `ProviderName`, `BillingAccountId`,
 `BillingCurrency` and `Tags`, then one `x_<tag>` column per promoted tag,
 `x_Serverless` and `x_Source`. It is FOCUS-aligned, not certified.
 
+Each `data.parquet` has a twin beside it, `data.csv.gz`, with the same rows,
+columns and metadata. The monitoring node loads the twin with Postgres's
+`COPY` and has no Parquet reader. Its format, `csv-twin-1`:
+
+- gzip, UTF-8, a header row, columns in the Parquet's order;
+- every value quoted; a NULL is an unquoted empty field, so `""` stays an
+  empty string;
+- timestamps in ISO 8601 with their offset, booleans `true` or `false`, maps
+  as JSON objects with sorted keys.
+
+The twin is written before its Parquet, so an output whose Parquet carries the
+current signature always has its twin.
+
 ## When it rebuilds
 
 Every source delivers whole billing periods, and the newest delivery of a
