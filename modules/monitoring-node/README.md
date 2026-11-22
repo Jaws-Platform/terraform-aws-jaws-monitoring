@@ -18,7 +18,8 @@ What it creates:
   CPU credits, an encrypted gp3 root volume, a public IPv4 address, a role
   with Session Manager and nothing else to reach it by;
 - **the data volume** `<name>-data` (encrypted gp3), mounted at `/data` and
-  kept when the instance is replaced, with optional daily snapshots;
+  kept when the instance is replaced, with optional daily snapshots (AWS
+  Backup, vault `<name>-snapshots`);
 - **the security group**: no ingress at all without a `domain`; with one,
   443 and 80 (Let's Encrypt and the redirect) only;
 - **the DNS record** (with a `domain`): the node upserts its own address at
@@ -163,6 +164,60 @@ bundle: the node reads each parameter into Grafana's environment.
   restarts Grafana with the new one.
 - Without `slack`, alerts show in Grafana only, and Grafana's notification
   policy is reset to its default.
+
+### The watchdog
+
+With `slack`, the node is watched from outside, so a dead node still gets
+reported:
+
+- **Two CloudWatch alarms:** a failed system status check makes EC2 recover
+  the instance onto other hardware; a failed instance status check reboots
+  it. A stopped instance sends no data, so a scheduled stop is silent.
+- **The watchdog Lambda** (`<name>-watchdog`) runs every 5 minutes, and at
+  once when an alarm changes, and posts to `host`'s channel:
+
+  | Problem | Severity | When |
+  |---|---|---|
+  | Monitoring node not running | critical | it should be running, and isn't, on two checks in a row; never in the 15 minutes after a scheduled start |
+  | Monitoring node running off-hours | warning | it is running in its off window (a stop that failed is quietly costing money); never in the 15 minutes after a scheduled stop |
+  | Grafana not answering | critical | with a `domain`, `https://<domain>/api/health` failed twice in a row |
+  | EC2 system / instance status check failed | critical | while its alarm is in ALARM |
+
+  Each posts once, again every 4 hours while it lasts, and once when it
+  resolves. Its state is the parameter `/<name>/node/watchdog-state`.
+
+### Off-hours
+
+`schedule` stops the node outside its hours, and starts it again:
+
+```hcl
+schedule = {
+  timezone = "America/Denver"
+  days     = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+  on       = "08:00"
+  off      = "24:00"   # midnight at the end of the day
+}
+```
+
+- **Allowed shapes:** whole hours; `on` before `off` on the same day (no
+  overnight windows); `off` may be `24:00`; at least 4 hours on; one or more
+  unique days. Avoid 01:00 to 03:00, when daylight saving changes: a start
+  or stop there can be skipped or doubled once a year.
+- **How:** two EventBridge Scheduler schedules call `StartInstances` and
+  `StopInstances` in the schedule's time zone. A stop is a normal shutdown.
+- **With Slack,** notifications are muted for the first 15 minutes after each
+  scheduled start, while targets come up and cost-sync catches up. Every area
+  gets its own route then, so nothing falls through to the unmuted root.
+- **Snapshots** run an hour after the stop, in the schedule's time zone (03:00
+  when that falls between 01:00 and 02:59), so they capture disks that were
+  shut down cleanly. Without a schedule they run at `snapshots.time_utc`.
+- **The vault keeps its snapshots:** turning `snapshots` off, or destroying the
+  node, needs its recovery points deleted first (AWS Backup → Vaults →
+  `<name>-snapshots`), so a stray destroy never deletes the backups.
+- **Patching** (the newer-release check) already runs at boot and every 6
+  hours, so it needs nothing from the schedule.
+- Jaws's 08:00 to midnight saves a third of the instance and IPv4 costs; the
+  disks are billed either way.
 
 ### Silences
 
@@ -344,8 +399,8 @@ click filters to one), one row per run, spend by workflow, and efficiency.
 
 | Event | What happens | What's lost |
 |---|---|---|
-| Stop and start | The disks persist; the stack comes back, and DNS follows the new address | Metrics for the time it was off |
-| Reboot or EC2 recovery | Same disks, same instance | Minutes of metrics |
+| Stop and start (or a schedule) | The disks persist; the stack comes back, cost-sync catches up, and DNS follows the new address | Metrics for the time it was off |
+| Reboot or EC2 recovery (the status-check alarms) | Same disks, same instance | Minutes of metrics |
 | Instance replaced | The new instance reattaches the data volume and carries on | Minutes of metrics |
 | Data volume lost | Dashboards and alerts are reprovisioned from the bundle, and cost-sync rebuilds the cost database from `normalized/`; Grafana users other than the admin must be added again | Prometheus history since the last snapshot |
 

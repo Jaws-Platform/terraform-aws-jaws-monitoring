@@ -46,9 +46,10 @@ module "normalizer" {
 module "node" {
   source = "./modules/monitoring-node"
 
-  name                 = var.name
-  vpc_id               = var.vpc_id
-  subnet_id            = var.subnet_id
+  name      = var.name
+  vpc_id    = var.vpc_id
+  subnet_id = var.subnet_id
+  # tflint-ignore: aws_instance_invalid_type # the ruleset (0.49.0) predates T9g (GA 2026-11-20), the node's default
   instance_type        = var.instance_type
   ami_name             = var.ami_name
   root_volume_gb       = var.root_volume_gb
