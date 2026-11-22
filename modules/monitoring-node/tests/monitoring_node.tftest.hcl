@@ -490,6 +490,8 @@ run "the_default_thresholds_are_the_specs" {
     condition = jsonencode(var.thresholds) == jsonencode({
       container_restarts        = { critical = 3, warning = 1 }
       cost_sync_hours           = { critical = 6, warning = 2 }
+      anomaly_ratio             = { critical = 4, warning = 2 }
+      untagged_daily_usd        = { warning = 0.5 }
       aws_charge_days           = { critical = 5, warning = 3 }
       databricks_delivery_hours = { critical = 60, warning = 36 }
       normalizer_hours          = { critical = 12, warning = 3 }
@@ -667,7 +669,7 @@ run "with_cost_the_bundle_configures_cost_sync" {
   }
 
   assert {
-    condition     = jsonencode(jsondecode(local.bundle.files["cost-sync/config.json"])) == jsonencode({ bucket = "acme-billing", prefix = "normalized", providers = ["aws", "databricks"], run_join_tags = ["RunId", "TaskId"] })
+    condition     = jsonencode(jsondecode(local.bundle.files["cost-sync/config.json"])) == jsonencode({ bucket = "acme-billing", budgets = { accounts = {}, projects = {}, total = null }, prefix = "normalized", providers = ["aws", "databricks"], run_join_tags = ["RunId", "TaskId"] })
     error_message = "cost-sync reads its bucket, prefix, providers and join tags from the bundle"
   }
 
@@ -721,6 +723,49 @@ run "rejects_pipeline_thresholds_in_the_wrong_order" {
 
   variables {
     thresholds = { normalizer_hours = { warning = 12, critical = 3 } }
+  }
+
+  expect_failures = [var.thresholds]
+}
+
+run "with_budgets_cost_sync_gets_them" {
+  command = plan
+
+  variables {
+    cost = { bucket = "acme-billing", budgets = { total = 100, projects = { alpha = 50 } } }
+  }
+
+  assert {
+    condition     = jsonencode(jsondecode(local.bundle.files["cost-sync/config.json"]).budgets) == jsonencode({ accounts = {}, projects = { alpha = 50 }, total = 100 })
+    error_message = "cost-sync gets the budgets to write into cost.budgets"
+  }
+}
+
+run "rejects_a_zero_budget" {
+  command = plan
+
+  variables {
+    cost = { bucket = "acme-billing", budgets = { total = 0 } }
+  }
+
+  expect_failures = [var.cost]
+}
+
+run "rejects_a_negative_anomaly_floor" {
+  command = plan
+
+  variables {
+    cost = { bucket = "acme-billing", anomaly_floor_usd = -1 }
+  }
+
+  expect_failures = [var.cost]
+}
+
+run "rejects_an_anomaly_ratio_of_one" {
+  command = plan
+
+  variables {
+    thresholds = { anomaly_ratio = { warning = 1, critical = 4 } }
   }
 
   expect_failures = [var.thresholds]

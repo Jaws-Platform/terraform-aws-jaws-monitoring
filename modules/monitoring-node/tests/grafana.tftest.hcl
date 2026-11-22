@@ -31,6 +31,8 @@ variables {
     aws_charge_days           = { warning = 3, critical = 5 }
     databricks_delivery_hours = { warning = 36, critical = 60 }
     cost_sync_hours           = { warning = 2, critical = 6 }
+    anomaly_ratio             = { warning = 2, critical = 4 }
+    untagged_daily_usd        = { warning = 0.5 }
   }
 }
 

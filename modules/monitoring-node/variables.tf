@@ -158,13 +158,15 @@ variable "thresholds" {
     aws_charge_days           = optional(object({ warning = number, critical = number }), { warning = 3, critical = 5 })
     databricks_delivery_hours = optional(object({ warning = number, critical = number }), { warning = 36, critical = 60 })
     cost_sync_hours           = optional(object({ warning = number, critical = number }), { warning = 2, critical = 6 })
+    anomaly_ratio             = optional(object({ warning = number, critical = number }), { warning = 2, critical = 4 })
+    untagged_daily_usd        = optional(object({ warning = number }), { warning = 0.5 })
   })
   default = {}
 
   validation {
     condition = alltrue([
       for t in [var.thresholds.cpu_percent, var.thresholds.memory_percent, var.thresholds.swap_percent, var.thresholds.disk_percent, var.thresholds.inodes_percent, var.thresholds.container_restarts,
-      var.thresholds.normalizer_hours, var.thresholds.aws_charge_days, var.thresholds.databricks_delivery_hours, var.thresholds.cost_sync_hours] :
+      var.thresholds.normalizer_hours, var.thresholds.aws_charge_days, var.thresholds.databricks_delivery_hours, var.thresholds.cost_sync_hours, var.thresholds.anomaly_ratio] :
       t.warning < t.critical
     ])
     error_message = "For cpu, memory, swap, disk, inodes, container_restarts and the pipeline thresholds, higher is worse: warning must be below critical."
@@ -190,6 +192,11 @@ variable "thresholds" {
   validation {
     condition     = alltrue([for v in [var.thresholds.container_restarts.warning, var.thresholds.container_restarts.critical] : v >= 1 && floor(v) == v])
     error_message = "container_restarts are whole numbers of restarts, at least 1."
+  }
+
+  validation {
+    condition     = var.thresholds.anomaly_ratio.warning > 1 && var.thresholds.untagged_daily_usd.warning >= 0
+    error_message = "anomaly_ratio is a multiple of the 14-day median, so warning is above 1; untagged_daily_usd is at least 0."
   }
 }
 
@@ -223,12 +230,18 @@ variable "slack" {
 }
 
 variable "cost" {
-  description = "The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), and the tags a task run's cost rows are joined on. null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it."
+  description = "The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), the tags a task run's cost rows are joined on, monthly budgets in USD (total, per project, per account by id or name), and the anomaly floor (the day's spend must also be this many USD over its 14-day median). null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it."
   type = object({
     bucket            = string
     normalized_prefix = optional(string, "normalized")
     providers         = optional(set(string), ["aws", "databricks"])
     run_join_tags     = optional(list(string), ["RunId", "TaskId"])
+    budgets = optional(object({
+      total    = optional(number)
+      projects = optional(map(number), {})
+      accounts = optional(map(number), {})
+    }), {})
+    anomaly_floor_usd = optional(number, 2)
   })
   default = null
 
@@ -250,5 +263,17 @@ variable "cost" {
   validation {
     condition     = var.cost == null ? true : length(var.cost.run_join_tags) > 0
     error_message = "cost.run_join_tags names at least one tag."
+  }
+
+  validation {
+    condition = var.cost == null ? true : alltrue([
+      for usd in concat(var.cost.budgets.total == null ? [] : [var.cost.budgets.total], values(var.cost.budgets.projects), values(var.cost.budgets.accounts)) : usd > 0
+    ])
+    error_message = "Every cost.budgets amount is a monthly USD amount above 0."
+  }
+
+  validation {
+    condition     = var.cost == null ? true : var.cost.anomaly_floor_usd >= 0
+    error_message = "cost.anomaly_floor_usd is at least 0."
   }
 }
