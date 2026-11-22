@@ -71,7 +71,12 @@ $thresholds
     routes   = { host = "platform", pipeline = "platform", cost = "costs" }
   }
   extra_dashboards  = { "Extra/extra.json" = file("$here/fixtures/extra-dashboard.json") }
-  extra_alert_rules = { smoke = file("$here/fixtures/extra-rule.yaml") }
+  extra_alert_rules = {
+    smoke = file("$here/fixtures/extra-rule.yaml")
+    # A \$ in a query model and an annotation, which the validator allows:
+    # Grafana must store it as written.
+    math = file("$here/fixtures/extra-rule-math.yaml")
+  }
 EOF
 }
 
@@ -82,7 +87,10 @@ phase2_args() {
   instance_type     = "m7g.medium"
   domain            = "grafana.example.com"
 $thresholds
-  extra_alert_rules = { smoke = "apiVersion: 1\ndeleteRules:\n  - orgId: 1\n    uid: extra-up-critical\n" }
+  extra_alert_rules = {
+    smoke = "apiVersion: 1\ndeleteRules:\n  - orgId: 1\n    uid: extra-up-critical\n"
+    math  = "apiVersion: 1\ndeleteRules:\n  - orgId: 1\n    uid: extra-math-warning\n"
+  }
 EOF
 }
 

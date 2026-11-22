@@ -66,12 +66,20 @@ locals {
         group_wait      = "30s"
         group_interval  = "5m"
         repeat_interval = "4h"
-        routes = [
-          for area in sort(keys(local.slack_routes)) : {
-            receiver        = "slack-${local.slack_routes[area]}"
-            object_matchers = [["area", "=", area]]
-          }
-        ]
+        routes = concat(
+          # A due AMI bump can stay due for days: remind once a day.
+          [{
+            receiver        = "slack-${lookup(local.slack_routes, "host", "")}"
+            object_matchers = [["alertname", "=", local.rule_common["host-os-release-warning"].title]]
+            repeat_interval = "24h"
+          }],
+          [
+            for area in sort(keys(local.slack_routes)) : {
+              receiver        = "slack-${local.slack_routes[area]}"
+              object_matchers = [["area", "=", area]]
+            }
+          ],
+        )
       }]
     }
   }

@@ -88,12 +88,17 @@ variable "grafana_admin" {
 }
 
 variable "prometheus_retention" {
-  description = "How long Prometheus keeps metrics, and the size it never grows past (the oldest data is dropped first). Keep size_gb well under data_volume_gb."
+  description = "How long Prometheus keeps metrics, and the size it never grows past (the oldest data is dropped first). size_gb is at least 1; keep it well under data_volume_gb."
   type = object({
     time    = optional(string, "365d")
     size_gb = optional(number, 12)
   })
   default = {}
+
+  validation {
+    condition     = var.prometheus_retention.size_gb >= 1
+    error_message = "prometheus_retention.size_gb is at least 1: the cap is what keeps Prometheus from filling the data volume (0 would turn it off)."
+  }
 }
 
 variable "snapshots" {

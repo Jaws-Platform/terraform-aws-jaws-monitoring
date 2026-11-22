@@ -119,11 +119,12 @@ defaults:
 | Scrape target down | | any | 2 min | |
 | Container restarts by Docker, 15 minutes | 1 | 3 | 2 min | `container_restarts` |
 | TLS certificate expiry (with a `domain`) | within 14 days | within 3 days | 2 min | `tls_days` |
-| Grafana rule-evaluation failures, 10 minutes | any | | 2 min | |
-| Newer Amazon Linux 2023 release available | for 7 days | | 2 min | `os_release_update_days` |
+| Grafana rule-evaluation failures, 10 minutes | any, for 12 minutes | | 12 min | |
+| Newer Amazon Linux 2023 release available (reminded once a day) | for 7 days | | 2 min | `os_release_update_days` |
 
-Every rule waits at least 2 minutes, so the restart of Prometheus or Grafana
-that a config change causes never posts. A rule that stops applying (a
+Every rule waits at least 2 minutes, and the rule-evaluation failures rule
+12, longer than its 10-minute window, so the restart of Prometheus or Grafana
+that a config change causes doesn't post. A rule that stops applying (a
 `domain` removed, a type without CPU credits) is deleted from Grafana, not
 left firing with its old numbers.
 
@@ -153,7 +154,7 @@ slack = {
 Each channel is a contact point; each area (`host`, `pipeline`, `cost`) goes
 to its channel, and `host` is required: everything else falls back to it.
 Messages are grouped by folder and rule, include resolved ones, and repeat
-every 4 hours while an alert keeps firing. The webhook URLs never enter the
+every 4 hours while an alert keeps firing (a due AMI bump once a day). The webhook URLs never enter the
 bundle: the node reads each parameter into Grafana's environment.
 
 - **Adding a channel:** create its webhook parameter (SecureString, default
@@ -179,9 +180,14 @@ needs a `uid` and a `title`); the folder is created in Grafana.
 `area` (`host`, `pipeline` or `cost`) and `severity` (`warning` or
 `critical`), and links a panel with both `__dashboardUid__` and
 `__panelId__` or neither. A lone `$` only works in annotations and query
-models, where Grafana doesn't expand it; elsewhere write `$$`. The plan
-fails if a rule breaks any of this, because Grafana would otherwise reject
-all of its provisioning at startup. To remove an extra rule, keep its uid
+models, where Grafana doesn't expand it; elsewhere write `$$`. Durations are
+Grafana's (`2m`, `1h30m`), a group's `interval` sits on its 10-second grid,
+states are `OK`, `NoData`, `Alerting` or `KeepLast` (`Error` for
+`execErrState`), every query has a `refId`, a `datasourceUid` and a `model`,
+and no uid is one of the module's own host rules (`host-<rule>-<severity>`).
+The plan fails if a
+rule breaks any of this, because Grafana would otherwise exit at startup:
+no dashboards, no alerts. To remove an extra rule, keep its uid
 under `deleteRules` in its document; Grafana keeps a provisioned rule until
 it is told to delete it.
 
@@ -297,7 +303,7 @@ module "monitoring_node" {
 | extra\_dashboards | More dashboards to provision: "<Folder>/<name>.json" (the folder is created in Grafana) to the dashboard's JSON, which needs a uid and a title. | `map(string)` | `{}` | no |
 | images | Container images to use instead of the module's digest-pinned defaults, by service name (see the README). | `map(string)` | `{}` | no |
 | instance\_type | The instance type, arm64 (Graviton). A T type runs with standard CPU credits, so a burst never bills extra; watch its credit balance. | `string` | `"t9g.medium"` | no |
-| prometheus\_retention | How long Prometheus keeps metrics, and the size it never grows past (the oldest data is dropped first). Keep size\_gb well under data\_volume\_gb. | <pre>object({<br/>    time    = optional(string, "365d")<br/>    size_gb = optional(number, 12)<br/>  })</pre> | `{}` | no |
+| prometheus\_retention | How long Prometheus keeps metrics, and the size it never grows past (the oldest data is dropped first). size\_gb is at least 1; keep it well under data\_volume\_gb. | <pre>object({<br/>    time    = optional(string, "365d")<br/>    size_gb = optional(number, 12)<br/>  })</pre> | `{}` | no |
 | root\_volume\_gb | Size of the root volume: the OS, the images and a 2 GB swap file. | `number` | `12` | no |
 | slack | Slack notifications: channels (name => the SSM SecureString parameter holding its incoming-webhook URL) and routes (area => channel; areas are host, pipeline and cost, and host is required, since the root policy uses it). null means no notifications: alerts show in Grafana only. Adding a channel is one webhook parameter and one line here. | <pre>object({<br/>    channels = map(string)<br/>    routes   = map(string)<br/>  })</pre> | `null` | no |
 | snapshots | Daily snapshots of the data volume (Data Lifecycle Manager), at time\_utc, keeping the last `keep`. | <pre>object({<br/>    enabled  = optional(bool, false)<br/>    time_utc = optional(string, "03:00")<br/>    keep     = optional(number, 7)<br/>  })</pre> | `{}` | no |

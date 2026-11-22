@@ -617,3 +617,13 @@ run "rejects_a_relative_parameter" {
 
   expect_failures = [var.slack]
 }
+
+run "rejects_a_prometheus_size_cap_of_zero" {
+  command = plan
+
+  variables {
+    prometheus_retention = { size_gb = 0 }
+  }
+
+  expect_failures = [var.prometheus_retention]
+}

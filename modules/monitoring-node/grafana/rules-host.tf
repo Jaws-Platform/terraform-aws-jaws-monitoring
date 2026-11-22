@@ -3,7 +3,9 @@
 # with labels area = host and severity for routing.
 #
 #   for          never under 2m: a Prometheus or Grafana restart during a config
-#                change must not post (every rule alerts on a query error)
+#                change must not post (every rule alerts on a query error);
+#                rule-eval-failures waits 12m, longer than its 10-minute window,
+#                since one failed tick keeps that window above zero for 10m
 #   noDataState  OK, except CloudWatch's, where no data means a wrong instance
 #   deleteRules  every catalogue uid not rendered (a feature switched off, a
 #                severity with no threshold): Grafana deletes a provisioned rule
@@ -28,7 +30,7 @@ locals {
     { key = "target-down", title = "Scrape target down", source = "prometheus", query = local.q.up, op = "lt", warning = null, critical = 0.5, offset = 0.5, for = "2m", panel = 42, needed = true, summary = "A scrape target is down: Prometheus can't reach it." },
     { key = "container-restarts", title = "Container restarts", source = "prometheus", query = local.q.restarts, op = "gt", warning = local.t.container_restarts.warning - 0.5, critical = local.t.container_restarts.critical - 0.5, offset = 0.5, for = "2m", panel = 43, needed = true, summary = "Docker restarted a container %v or more times in 15 minutes." },
     { key = "tls-expiry", title = "TLS certificate expiry", source = "prometheus", query = local.q.tls_days, op = "lt", warning = local.t.tls_days.warning, critical = local.t.tls_days.critical, offset = 0, for = "2m", panel = 45, needed = local.served, summary = "The public certificate expires within %v days; Caddy should have renewed it by now." },
-    { key = "rule-eval-failures", title = "Grafana rule-evaluation failures", source = "prometheus", query = local.q.eval_failures, op = "gt", warning = 0.5, critical = null, offset = 0.5, for = "2m", panel = 47, needed = true, summary = "Grafana alert rules failed to evaluate in the last 10 minutes: a broken query, or a data source it can't reach." },
+    { key = "rule-eval-failures", title = "Grafana rule-evaluation failures", source = "prometheus", query = local.q.eval_failures, op = "gt", warning = 0.5, critical = null, offset = 0.5, for = "12m", panel = 47, needed = true, summary = "Grafana alert rules failed to evaluate in the last 10 minutes: a broken query, or a data source it can't reach." },
     { key = "os-release", title = "Newer AL2023 release available", source = "prometheus", query = local.q.os_update_days, op = "gt", warning = local.t.os_release_update_days.warning, critical = null, offset = 0, for = "2m", panel = 52, needed = true, summary = "A newer Amazon Linux 2023 release has been out for more than %v days: time for an AMI bump." },
   ]
 

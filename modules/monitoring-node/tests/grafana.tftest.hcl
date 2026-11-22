@@ -743,7 +743,7 @@ run "each_channel_is_a_contact_point_and_each_area_a_route" {
   }
 
   assert {
-    condition     = length(one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes) == 3 && jsonencode(one([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : r if r.receiver == "slack-costs"]).object_matchers) == jsonencode([["area", "=", "cost"]])
+    condition     = length([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : r if r.object_matchers[0][0] == "area"]) == 3 && jsonencode(one([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : r if r.receiver == "slack-costs"]).object_matchers) == jsonencode([["area", "=", "cost"]])
     error_message = "one route per area, each to its channel"
   }
 
@@ -800,5 +800,155 @@ run "without_slack_the_policy_tree_is_reset" {
   assert {
     condition     = output.webhook_env == {}
     error_message = "no webhooks to read"
+  }
+}
+
+run "rejects_a_for_grafana_cant_parse" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    extra_dashboards  = { "Extra/extra.json" = file("tests/fixtures/extra-dashboard.json") }
+    extra_alert_rules = { smoke = replace(file("tests/fixtures/extra-rule.yaml"), "        for: 2m", "        for: 5 minutes") }
+  }
+
+  expect_failures = [output.files]
+}
+
+run "rejects_an_unknown_no_data_state" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    extra_dashboards  = { "Extra/extra.json" = file("tests/fixtures/extra-dashboard.json") }
+    extra_alert_rules = { smoke = replace(file("tests/fixtures/extra-rule.yaml"), "noDataState: OK", "noDataState: Ok") }
+  }
+
+  expect_failures = [output.files]
+}
+
+run "rejects_an_unknown_error_state" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    extra_dashboards  = { "Extra/extra.json" = file("tests/fixtures/extra-dashboard.json") }
+    extra_alert_rules = { smoke = replace(file("tests/fixtures/extra-rule.yaml"), "execErrState: Alerting", "execErrState: Firing") }
+  }
+
+  expect_failures = [output.files]
+}
+
+run "rejects_an_interval_off_grafanas_10s_grid" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    extra_dashboards  = { "Extra/extra.json" = file("tests/fixtures/extra-dashboard.json") }
+    extra_alert_rules = { smoke = replace(file("tests/fixtures/extra-rule.yaml"), "    interval: 1m", "    interval: 15s") }
+  }
+
+  expect_failures = [output.files]
+}
+
+run "rejects_a_group_without_a_folder" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    extra_dashboards  = { "Extra/extra.json" = file("tests/fixtures/extra-dashboard.json") }
+    extra_alert_rules = { smoke = replace(file("tests/fixtures/extra-rule.yaml"), "    folder: Extra\n", "") }
+  }
+
+  expect_failures = [output.files]
+}
+
+run "rejects_a_document_that_is_not_one" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    extra_dashboards  = { "Extra/extra.json" = file("tests/fixtures/extra-dashboard.json") }
+    extra_alert_rules = { smoke = "just a string" }
+  }
+
+  expect_failures = [output.files]
+}
+
+run "rejects_a_query_without_a_data_source" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    extra_dashboards  = { "Extra/extra.json" = file("tests/fixtures/extra-dashboard.json") }
+    extra_alert_rules = { smoke = replace(file("tests/fixtures/extra-rule.yaml"), "            datasourceUid: prometheus\n", "") }
+  }
+
+  expect_failures = [output.files]
+}
+
+run "rejects_a_uid_the_host_rules_own" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    extra_dashboards  = { "Extra/extra.json" = file("tests/fixtures/extra-dashboard.json") }
+    extra_alert_rules = { smoke = replace(file("tests/fixtures/extra-rule.yaml"), "uid: extra-up-critical", "uid: host-tls-expiry-warning") }
+  }
+
+  expect_failures = [output.files]
+}
+
+run "the_evaluation_failure_rule_outlasts_its_window" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = tonumber(trimsuffix(one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-host.json"]).groups : gr.rules]) : r.for if r.uid == "host-rule-eval-failures-warning"]), "m")) > 10
+    error_message = "a short Prometheus outage leaves failures in the 10-minute window for 10 minutes; the rule must wait longer than that, so only failures that go on fire it"
+  }
+}
+
+run "the_patch_reminder_repeats_daily" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    slack = { channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }, routes = { host = "platform", pipeline = "platform", cost = "costs" } }
+  }
+
+  assert {
+    condition     = jsonencode(one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes[0].object_matchers) == jsonencode([["alertname", "=", "Newer AL2023 release available — warning"]]) && one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes[0].receiver == "slack-platform" && one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes[0].repeat_interval == "24h"
+    error_message = "a due AMI bump can stay due for days: its reminder goes to the host channel once a day, not every 4 hours"
   }
 }
