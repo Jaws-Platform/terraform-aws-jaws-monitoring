@@ -28,7 +28,10 @@ module "node" {
   }
 
   # The billing bucket the billing-normalizer writes to.
-  cost = { bucket = "acme-billing" }
+  cost = {
+    bucket  = "acme-billing"
+    budgets = { total = 100, projects = { acme-web = 40 } }
+  }
 
   snapshots = { enabled = true }
 }

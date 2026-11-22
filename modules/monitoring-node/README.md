@@ -215,6 +215,12 @@ cost = {
   # normalized_prefix = "normalized"
   # providers         = ["aws", "databricks"]   # which freshness alerts apply
   # run_join_tags     = ["RunId", "TaskId"]     # the tags a run's cost rows carry
+  budgets = {                                  # monthly, in USD
+    total    = 100
+    projects = { braveheart = 60 }
+    accounts = { production = 80 }             # by account id or name
+  }
+  # anomaly_floor_usd = 2                      # a day must also be this much over its norm
 }
 ```
 
@@ -247,6 +253,16 @@ sudo docker exec -it monitoring-postgres-1 psql -U monitoring -d cost
 | `cost.task_runs` | one row per run: its launch metadata, `started_at`, `ended_at`, `outcome` (`swept`, or null while running) |
 | `cost.task_run_costs` | each run's billed cost: the cost rows that carry its join tags |
 | `cost.loads`, `cost.normalizer_runs` | what was loaded, and the normalizer runs seen |
+| `cost.daily` | spend per UTC day, provider, account, project (`(untagged)` without one), environment, service and charge category, with whether the day is `complete` |
+| `cost.month_to_date` | per scope (`total`, each project, each account): month to date, the forecast, the budget, and both as a share of it |
+| `cost.anomalies` | the newest day's spend per total, project and service against the median of the 14 complete days before it |
+| `cost.untagged`, `cost.untagged_new` | untagged spend (tax and credits aside), and the newest day's pairs with none in the 14 days before |
+| `cost.budgets`, `cost.as_of` | the budgets from the `cost` input (rewritten every run), and the newest complete day |
+
+**Days and the forecast.**
+
+- Days are UTC calendar days, because AWS bills in UTC. A day is complete 48 hours after it ends; until then its charges are still arriving.
+- The month-end forecast is the month's complete days, plus the last 7 complete days' average for every day still to come. A partial day is replaced by the average, not counted short.
 
 **The pipeline alerts** (label `area = pipeline`, on the host dashboard's
 Pipeline row):
@@ -264,6 +280,27 @@ Pipeline row):
 Until any data has arrived, each clock starts when the node first ran
 cost-sync. A new node isn't alarmed in its first hours, but is once data
 never comes.
+
+**The cost alerts** (label `area = cost`, folder `Cost`, every 5 minutes) are
+SQL on the cost database, one alert per row:
+
+| Rule | Warning | Critical | Set by |
+|---|---|---|---|
+| Budget: month-end forecast | over 100 % of a budget | | `cost.budgets` |
+| Budget: month to date | | over 100 % of a budget | `cost.budgets` |
+| Daily spend anomaly (the total and each project): the newest day against the median of its 14 complete days before, and over `anomaly_floor_usd` above it | 2× | 4× | `thresholds.anomaly_ratio`, `cost.anomaly_floor_usd` |
+| New untagged spend: an account and service with none in the 14 days before | over $0.50 | | `thresholds.untagged_daily_usd` |
+
+A planned expensive run will trip the anomaly alert: silence it first (see
+Silences). A brand-new project has no median, so only the total can alert on
+its first days.
+
+**Cost · Overview** (folder `Cost`) shows the last 90 days, filtered by
+provider, account, project and environment. Tiles across the top: month to
+date, forecast and spend against the total budget, yesterday, the month-on-
+month change, untagged spend and the newest complete day. Below them, the
+trend, where the money goes, the budgets, the biggest movers and the
+untagged spend.
 
 ## Recovery
 
