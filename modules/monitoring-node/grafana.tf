@@ -10,7 +10,7 @@ module "grafana" {
   domain            = var.domain
   thresholds        = var.thresholds
   slack             = var.slack
-  cost              = var.cost == null ? null : { providers = var.cost.providers }
+  cost              = var.cost == null ? null : { providers = var.cost.providers, anomaly_floor_usd = var.cost.anomaly_floor_usd }
   extra_dashboards  = var.extra_dashboards
   extra_alert_rules = var.extra_alert_rules
 }
@@ -26,6 +26,11 @@ locals {
       prefix        = var.cost.normalized_prefix
       providers     = sort(tolist(var.cost.providers))
       run_join_tags = var.cost.run_join_tags
+      budgets = {
+        total    = var.cost.budgets.total
+        projects = var.cost.budgets.projects
+        accounts = var.cost.budgets.accounts
+      }
     })
     "cost-sync/monitoring-cost-sync.py" = file("${path.module}/files/monitoring-cost-sync.py")
   } : {}

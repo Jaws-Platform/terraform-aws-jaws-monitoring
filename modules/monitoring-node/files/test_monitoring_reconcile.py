@@ -68,11 +68,20 @@ if "up" in args and s["fail"].get("up"):
 json.dump(s, open(path, "w")); sys.exit(code)
 '''
 
+FAKE_SYSTEMCTL = r'''#!/usr/bin/env python3
+import json, os, sys
+path = os.environ["FAKE_STATE"]
+s = json.load(open(path))
+s["calls"].append(["systemctl"] + sys.argv[1:])
+json.dump(s, open(path, "w")); sys.exit(1 if s["fail"].get("systemctl") else 0)
+'''
 
-def bundle(text="v1"):
+
+def bundle(text="v1", cost=False):
     return json.dumps({
         "schema": "monitoring-bundle-1",
-        "files": {"compose.yaml": f"services: {{}}  # {text}\n", "prometheus/prometheus.yml": f"# {text}\n"},
+        "files": {"compose.yaml": f"services: {{}}  # {text}\n", "prometheus/prometheus.yml": f"# {text}\n",
+                  **({"cost-sync/monitoring-cost-sync.py": "# cost-sync\n", "cost-sync/config.json": "{}\n"} if cost else {})},
         "secrets": {"GF_SECURITY_ADMIN_USER": USER, "GF_SECURITY_ADMIN_PASSWORD": PASSWORD},
         "generated": ["POSTGRES_PASSWORD"],
     })
@@ -92,7 +101,7 @@ class Node:
             f"NAME='acme-monitoring'\nREGION='us-east-1'\nPARAMETER_PREFIX='{PREFIX}'\nCONFIG_BUCKET='{BUCKET}'\n")
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for name, body in (("aws", FAKE_AWS), ("docker", FAKE_DOCKER)):
+        for name, body in (("aws", FAKE_AWS), ("docker", FAKE_DOCKER), ("systemctl", FAKE_SYSTEMCTL)):
             path = self.bin / name
             path.write_text(body.replace("#!/usr/bin/env python3", f"#!{sys.executable}", 1))
             path.chmod(path.stat().st_mode | stat.S_IEXEC)
@@ -139,6 +148,43 @@ class ReconcileTest(unittest.TestCase):
     def setUp(self):
         self.node = Node()
         self.addCleanup(self.node.tmp.cleanup)
+
+    def test_a_new_bundle_with_cost_sync_starts_it_once_the_stack_is_up(self):
+        # A release can add views the cost rules read: cost-sync creates them now,
+        # not up to 30 minutes later, while every cost rule errors.
+        self.node.publish("bundles/ccc.json", bundle("v2", cost=True))
+
+        result = self.node.run()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [c[:3] if c[0] == "docker" else c for c in self.node.state["calls"] if c[0] in ("docker", "systemctl")]
+        self.assertEqual(calls[-1], ["systemctl", "start", "--no-block", "monitoring-cost-sync.service"])
+        self.assertIn("up", self.node.state["calls"][self.node.state["calls"].index(calls[-1]) - 1])
+
+    def test_an_unchanged_bundle_or_one_without_cost_sync_doesnt_start_it(self):
+        self.node.run()
+        self.node.publish("bundles/ccc.json", bundle("v2", cost=True))
+        self.node.run()
+
+        result = self.node.run()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.node.calls("systemctl"), [])
+        self.node.publish("bundles/ddd.json", bundle("v3"))
+        self.node.run()
+        self.assertEqual(self.node.calls("systemctl"), [])
+
+    def test_cost_sync_failing_to_start_doesnt_fail_the_release(self):
+        self.node.publish("bundles/ccc.json", bundle("v2", cost=True))
+        self.node.load()
+        self.node.state["fail"]["systemctl"] = True
+        self.node.save()
+
+        result = self.node.run()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.node.state["params"][f"{PREFIX}/status"], "ok")
+        self.assertIn("cost-sync", result.stderr)
 
     def test_a_first_run_installs_the_bundle_and_starts_the_stack(self):
         result = self.node.run()

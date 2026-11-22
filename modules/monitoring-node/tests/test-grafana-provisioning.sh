@@ -68,6 +68,8 @@ thresholds='  thresholds = {
     aws_charge_days           = { warning = 3, critical = 5 }
     databricks_delivery_hours = { warning = 36, critical = 60 }
     cost_sync_hours           = { warning = 2, critical = 6 }
+    anomaly_ratio             = { warning = 2, critical = 4 }
+    untagged_daily_usd        = { warning = 0.5 }
   }'
 
 phase1_args() {
@@ -150,7 +152,7 @@ start_postgres() {
   done
   local node="$scratch/cost-node"
   mkdir -p "$node/root/data/config/current/cost-sync" "$node/root/data/secrets" "$node/s3/acme-billing" "$node/bin" "$node/textfile"
-  printf '{"bucket": "acme-billing", "prefix": "normalized", "providers": ["aws"], "run_join_tags": ["RunId", "TaskId"]}' \
+  printf '{"bucket": "acme-billing", "prefix": "normalized", "providers": ["aws"], "run_join_tags": ["RunId", "TaskId"], "budgets": {"total": 1, "projects": {}, "accounts": {}}}' \
     > "$node/root/data/config/current/cost-sync/config.json"
   printf '%s' "$reader_password" > "$node/root/data/secrets/COST_READER_PASSWORD"
   printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$here/fake_aws_s3.py" > "$node/bin/aws"
@@ -158,7 +160,24 @@ start_postgres() {
   PATH="$node/bin:$PATH" MONITORING_ROOT="$node/root" MONITORING_TEXTFILE_DIR="$node/textfile" FAKE_S3_ROOT="$node/s3" \
     MONITORING_PSQL="docker exec -i $postgres psql -U monitoring -v ON_ERROR_STOP=1" \
     python3 "$mod/files/monitoring-cost-sync.py" || fail "cost-sync couldn't set up the cost database"
+  # Rows for the cost rules, relative to now: alpha spends $1 a day, then $10
+  # today; untagged S3 appears today; the total budget is $1.
+  docker exec -i "$postgres" psql -U monitoring -d cost -X -q -v ON_ERROR_STOP=1 > /dev/null << 'SQL'
+INSERT INTO cost.lines (key, provider, period, provider_name, sub_account_id, sub_account_name, charge_period_start,
+                        charge_category, service_name, billed_cost, tags, project)
+SELECT 'smoke', 'aws', 'smoke', 'AWS', '570327089884', 'production',
+       (date_trunc('day', now() AT TIME ZONE 'UTC') - make_interval(days => n)) AT TIME ZONE 'UTC',
+       'Usage', 'Amazon Elastic Compute Cloud', CASE WHEN n = 0 THEN 10 ELSE 1 END, '{"Project": "alpha"}'::jsonb, 'alpha'
+FROM generate_series(0, 20) AS n
+UNION ALL
+SELECT 'smoke', 'aws', 'smoke', 'AWS', '570327089884', 'production', date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
+       'Usage', 'Amazon Simple Storage Service', 3, '{}'::jsonb, NULL;
+SQL
 }
+
+# What each cost rule must find in those rows: its uid and a label it carries.
+export SMOKE_COST_EXPECT='{"cost-budget-spent-critical": {"scope": "total"}, "cost-budget-forecast-warning": {"scope": "total"}, "cost-anomaly-warning": {"name": "alpha"}, "cost-anomaly-critical": {"name": "alpha"}, "cost-untagged-new-warning": {"service": "Amazon Simple Storage Service"}}'
+
 
 start_grafana() { # <phase>
   local release="$scratch/$1/release" env=()

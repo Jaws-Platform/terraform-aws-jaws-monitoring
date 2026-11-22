@@ -41,6 +41,8 @@ variable "thresholds" {
     aws_charge_days           = object({ warning = number, critical = number })
     databricks_delivery_hours = object({ warning = number, critical = number })
     cost_sync_hours           = object({ warning = number, critical = number })
+    anomaly_ratio             = object({ warning = number, critical = number })
+    untagged_daily_usd        = object({ warning = number })
   })
 }
 
@@ -48,6 +50,8 @@ variable "cost" {
   description = "The cost data on the node (its providers), already checked; null for a host-only node."
   type = object({
     providers = set(string)
+    # The monitoring-node module passes its resolved value; 2 is the same default.
+    anomaly_floor_usd = optional(number, 2)
   })
   default = null
 }

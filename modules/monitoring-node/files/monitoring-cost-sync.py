@@ -14,7 +14,9 @@ Otherwise:
   3. load every twin whose ETag changed, each in its own transaction: its old
      rows out, its new rows in, so an output is never doubled or half there,
      and one bad output never stops the rest;
-  4. drop the rows of outputs that are gone, and record _runs/latest.json;
+  4. drop the rows of outputs that are gone, and record _runs/latest.json; the
+     budgets in the config are rewritten every run, and the cost model (the
+     views the dashboards and cost alerts read) is part of the schema;
   5. write node-exporter textfile metrics for the pipeline alerts.
 
 Staleness clocks start at this node's first run when nothing has arrived yet,
@@ -43,7 +45,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-COST_SCHEMA_VERSION = "1"
+COST_SCHEMA_VERSION = "2"
 DEFAULT_PSQL = "docker exec -i monitoring-postgres-1 psql -U monitoring -v ON_ERROR_STOP=1"
 DEFAULT_TEXTFILE_DIR = "/var/lib/node_exporter/textfile"
 METRICS_FILE = "cost_sync.prom"
@@ -80,6 +82,16 @@ RUNS_COLUMNS = [
     ("exit_code", "exit_code", INT), ("interrupted_at", "interrupted_at", TIME), ("reason", "reason", TEXT),
     ("links", "links", JSONB), ("attributes", "attributes", JSONB), ("x_Source", "source", TEXT),
 ]
+
+# Stored with each cost row: the UTC day it is dated to (spec 6.6), which every
+# view reads by index; and whether it charges for more than a day (a monthly
+# fee, a support plan), dated to its period's start. Such a charge is spent, but
+# isn't a day's spend: the forecast's average, the anomalies and new untagged
+# spend leave it out.
+LINES_DERIVED = (
+    "day date GENERATED ALWAYS AS ((charge_period_start AT TIME ZONE 'UTC')::date) STORED",
+    "long_period boolean GENERATED ALWAYS AS (coalesce(charge_period_end - charge_period_start > interval '1 day', false)) STORED",
+)
 
 
 class Failed(Exception):
@@ -118,16 +130,19 @@ def write_atomic(path: Path, text: str) -> None:
 
 
 def schema_sql(join_tags: List[str]) -> str:
-    def table(name: str, leading: List[str], columns) -> str:
-        return f"CREATE TABLE IF NOT EXISTS cost.{name} ({', '.join(leading + [f'{c} {t}' for _, c, t in columns])});\n"
+    def table(name: str, leading: List[str], columns, trailing: tuple = ()) -> str:
+        return (f"CREATE TABLE IF NOT EXISTS cost.{name} "
+                f"({', '.join(leading + [f'{c} {t}' for _, c, t in columns] + list(trailing))});\n")
 
     join = ", ".join(f"{lit(tag)}, s.tags->>{lit(tag)}" for tag in join_tags)
     return (
         "CREATE TABLE IF NOT EXISTS cost.loads (key text PRIMARY KEY, kind text NOT NULL, provider text, "
         "period text NOT NULL, etag text NOT NULL, last_modified timestamptz NOT NULL, rows integer NOT NULL, "
         "billed_cost double precision, loaded_at timestamptz NOT NULL);\n"
-        + table("lines", ["key text NOT NULL", "provider text NOT NULL", "period text NOT NULL"], FOCUS_COLUMNS)
+        + table("lines", ["key text NOT NULL", "provider text NOT NULL", "period text NOT NULL"], FOCUS_COLUMNS,
+                LINES_DERIVED)
         + "CREATE INDEX IF NOT EXISTS lines_key ON cost.lines (key);\n"
+        "CREATE INDEX IF NOT EXISTS lines_day ON cost.lines (day);\n"
         "CREATE INDEX IF NOT EXISTS lines_provider_charge ON cost.lines (provider, charge_period_start);\n"
         "CREATE INDEX IF NOT EXISTS lines_tags ON cost.lines USING gin (tags);\n"
         + table("run_events", ["key text NOT NULL", "period text NOT NULL"], RUNS_COLUMNS)
@@ -152,7 +167,8 @@ def schema_sql(join_tags: List[str]) -> str:
         "CREATE OR REPLACE VIEW cost.task_run_costs AS\n"
         "SELECT r.run_key, coalesce(sum(l.billed_cost), 0) AS billed_cost, count(l.key) AS lines\n"
         "FROM cost.task_runs r LEFT JOIN cost.lines l ON l.tags @> r.join_tags GROUP BY r.run_key;\n"
-        "GRANT CONNECT ON DATABASE cost TO cost_reader;\n"
+        + MODEL_SQL
+        + "GRANT CONNECT ON DATABASE cost TO cost_reader;\n"
         "GRANT USAGE ON SCHEMA cost TO cost_reader;\n"
         "GRANT SELECT ON ALL TABLES IN SCHEMA cost TO cost_reader;\n"
         f"INSERT INTO cost.meta VALUES ('schema_version', {lit(COST_SCHEMA_VERSION)}) "
@@ -163,6 +179,143 @@ def schema_sql(join_tags: List[str]) -> str:
 # __NOW__ is now(), or MONITORING_NOW (Unix seconds) for tests. Only runs from
 # the last 7 days can be over their ceiling: the bill arrives a day or two after
 # a run and never shrinks, so an older one would be reported forever.
+# The cost model: what the dashboards and the cost alerts read. Days are UTC
+# days of charge_period_start; a day is complete once its end is 48 hours old
+# (spec 6.6). cost.now() is now() unless a session sets cost.now (the tests).
+MODEL_SQL = """
+CREATE OR REPLACE FUNCTION cost.now() RETURNS timestamptz LANGUAGE sql STABLE AS
+$$ SELECT coalesce(nullif(current_setting('cost.now', true), '')::timestamptz, now()) $$;
+-- Stable, so a view's window on day is pushed down to the lines_day index.
+CREATE OR REPLACE FUNCTION cost.today() RETURNS date LANGUAGE sql STABLE AS
+$$ SELECT (cost.now() AT TIME ZONE 'UTC')::date $$;
+CREATE OR REPLACE FUNCTION cost.last_complete() RETURNS date LANGUAGE sql STABLE AS
+$$ SELECT ((cost.now() AT TIME ZONE 'UTC') - interval '72 hours')::date $$;
+CREATE OR REPLACE FUNCTION cost.month_start() RETURNS date LANGUAGE sql STABLE AS
+$$ SELECT date_trunc('month', cost.now() AT TIME ZONE 'UTC')::date $$;
+CREATE OR REPLACE FUNCTION cost.next_month() RETURNS date LANGUAGE sql STABLE AS
+$$ SELECT (date_trunc('month', cost.now() AT TIME ZONE 'UTC') + interval '1 month')::date $$;
+
+CREATE TABLE IF NOT EXISTS cost.budgets (scope text NOT NULL, name text NOT NULL,
+  monthly_usd double precision NOT NULL, PRIMARY KEY (scope, name));
+
+-- Spend per UTC day, up to today (a pinned cost.now sees no later rows).
+CREATE OR REPLACE VIEW cost.daily AS
+SELECT day, day <= cost.last_complete() AS complete, long_period,
+       provider, sub_account_id AS account_id, sub_account_name AS account_name,
+       coalesce(project, '(untagged)') AS project, environment, service_name AS service, charge_category,
+       sum(billed_cost) AS billed_cost
+FROM cost.lines
+WHERE day <= cost.today()
+GROUP BY day, long_period, provider, sub_account_id, sub_account_name, coalesce(project, '(untagged)'),
+         environment, service_name, charge_category;
+
+CREATE OR REPLACE VIEW cost.as_of AS
+SELECT max(day) AS day FROM cost.lines WHERE day <= cost.last_complete();
+
+-- One row per budget scope: the total, each project, each account (by id; a
+-- budget may name the account by id or name). The forecast is the month's
+-- long-period charges and complete days, plus, for each day of the month not
+-- complete yet, what it has so far or the last 7 complete days' average,
+-- whichever is more. It is never below the month's spend.
+CREATE OR REPLACE VIEW cost.month_to_date AS
+WITH recent AS (
+  SELECT * FROM cost.daily WHERE day >= least(cost.month_start(), cost.last_complete() - 6)
+), scoped AS (
+  SELECT 'total'::text AS scope, 'total'::text AS name, NULL::text AS alt, day, long_period, billed_cost FROM recent
+  UNION ALL SELECT 'project', project, NULL, day, long_period, billed_cost FROM recent
+  UNION ALL SELECT 'account', account_id, account_name, day, long_period, billed_cost FROM recent WHERE account_id IS NOT NULL
+), spent AS (
+  SELECT scope, name, max(alt) AS alt FROM scoped WHERE day >= cost.month_start() GROUP BY scope, name
+), names AS (
+  SELECT scope, name, alt FROM spent
+  UNION ALL
+  SELECT b.scope, b.name, NULL FROM cost.budgets b
+  WHERE NOT EXISTS (SELECT 1 FROM spent x WHERE x.scope = b.scope AND (x.name = b.name OR x.alt = b.name))
+), sums AS (
+  SELECT n.scope, n.name, n.alt,
+    coalesce(sum(s.billed_cost) FILTER (WHERE s.day >= cost.month_start()), 0) AS mtd,
+    coalesce(sum(s.billed_cost) FILTER (WHERE s.day >= cost.month_start() AND s.long_period), 0) AS long_mtd,
+    coalesce(sum(s.billed_cost) FILTER (WHERE s.day >= cost.month_start() AND s.day <= cost.last_complete()
+                                          AND NOT s.long_period), 0) AS complete_mtd,
+    coalesce(sum(s.billed_cost) FILTER (WHERE s.day > cost.last_complete() - 7 AND s.day <= cost.last_complete()
+                                          AND NOT s.long_period), 0) / 7.0 AS avg7
+  FROM names n LEFT JOIN scoped s ON s.scope = n.scope AND s.name = n.name
+  GROUP BY n.scope, n.name, n.alt
+), per_day AS (
+  SELECT scope, name, day, sum(billed_cost) AS spend FROM scoped
+  WHERE NOT long_period AND day > cost.last_complete() GROUP BY scope, name, day
+), ahead AS (
+  SELECT x.scope, x.name, sum(greatest(coalesce(p.spend, 0), x.avg7)) AS rest
+  FROM sums x
+  CROSS JOIN generate_series(0, cost.next_month() - greatest(cost.last_complete() + 1, cost.month_start()) - 1) AS i
+  LEFT JOIN per_day p ON p.scope = x.scope AND p.name = x.name
+                     AND p.day = greatest(cost.last_complete() + 1, cost.month_start()) + i
+  GROUP BY x.scope, x.name
+), f AS (
+  SELECT x.scope, x.name, x.alt, x.mtd, x.complete_mtd, x.avg7,
+         cost.next_month() - greatest(cost.last_complete() + 1, cost.month_start()) AS days_left,
+         x.long_mtd + x.complete_mtd + coalesce(a.rest, 0) AS forecast
+  FROM sums x LEFT JOIN ahead a ON a.scope = x.scope AND a.name = x.name
+)
+SELECT f.scope, f.name, f.mtd, f.complete_mtd, f.avg7, f.days_left, f.forecast,
+       b.monthly_usd AS budget,
+       100 * f.mtd / b.monthly_usd AS used_percent,
+       100 * f.forecast / b.monthly_usd AS forecast_percent
+FROM f
+LEFT JOIN LATERAL (SELECT monthly_usd FROM cost.budgets bb
+                   WHERE bb.scope = f.scope AND (bb.name = f.name OR bb.name = f.alt)
+                   ORDER BY bb.name = f.name DESC LIMIT 1) b ON true;
+
+-- Each of the last three days with data (a provider that reports a day late
+-- is judged when its day lands): its spend against the median of the 14
+-- complete days before it (a complete day with no rows counts 0).
+CREATE OR REPLACE VIEW cost.anomalies AS
+WITH t AS (
+  SELECT max(day) AS newest FROM cost.lines WHERE day <= cost.today() AND NOT long_period
+), recent AS (
+  SELECT day, project, service, billed_cost FROM cost.daily WHERE day >= cost.today() - 45 AND NOT long_period
+), scoped AS (
+  SELECT 'total'::text AS kind, 'total'::text AS name, day, billed_cost FROM recent
+  UNION ALL SELECT 'project', project, day, billed_cost FROM recent
+  UNION ALL SELECT 'service', service, day, billed_cost FROM recent
+), per_day AS (
+  SELECT kind, name, day, sum(billed_cost) AS spend FROM scoped GROUP BY kind, name, day
+), judged AS (
+  SELECT p.kind, p.name, p.day, p.spend, least(p.day - 1, cost.last_complete()) AS base_end
+  FROM per_day p, t WHERE p.day >= t.newest - 2
+), med AS (
+  SELECT j.kind, j.name, j.day, percentile_cont(0.5) WITHIN GROUP (ORDER BY coalesce(p.spend, 0)) AS median14
+  FROM judged j CROSS JOIN generate_series(0, 13) AS i
+  LEFT JOIN per_day p ON p.kind = j.kind AND p.name = j.name AND p.day = j.base_end - i
+  GROUP BY j.kind, j.name, j.day
+)
+SELECT j.kind, j.name, j.day, j.spend, m.median14,
+       CASE WHEN m.median14 > 0 THEN j.spend / m.median14 END AS ratio,
+       j.spend - m.median14 AS excess
+FROM judged j JOIN med m ON m.kind = j.kind AND m.name = j.name AND m.day = j.day;
+
+-- Untagged spend: no project, and not tax or credit, which no tag can carry.
+CREATE OR REPLACE VIEW cost.untagged AS
+SELECT day, long_period, account_id, max(account_name) AS account_name, service, sum(billed_cost) AS billed_cost
+FROM cost.daily
+WHERE project = '(untagged)' AND coalesce(charge_category, '') NOT IN ('Tax', 'Credit')
+GROUP BY day, long_period, account_id, service;
+
+-- Each account and service with untagged spend in the 16 days to the newest:
+-- its first day there and its spend since. It is new when that first day is the
+-- newest or the day before (none in the 14 days before), so a charge that
+-- starts late in a day is still new the next day, when it has a whole day's
+-- spend, and a steady charge is new only once.
+CREATE OR REPLACE VIEW cost.untagged_new AS
+WITH t AS (SELECT max(day) AS newest FROM cost.lines WHERE day <= cost.today() AND NOT long_period)
+SELECT u.account_id, max(u.account_name) AS account_name, u.service, min(u.day) AS first_day,
+       sum(u.billed_cost) AS spend, min(u.day) >= t.newest - 1 AS is_new
+FROM cost.untagged u CROSS JOIN t
+WHERE u.day >= cost.today() - 45 AND u.day >= t.newest - 15 AND NOT u.long_period
+GROUP BY u.account_id, u.service, t.newest;
+"""
+
+
 MEASURE_SQL = """SELECT json_build_object(
   'outputs', (SELECT count(*) FROM cost.loads),
   'newest_charge', (SELECT coalesce(json_object_agg(provider, t), '{}') FROM
@@ -244,6 +397,17 @@ class CostSync:
             rebuild = ("DROP SCHEMA cost CASCADE;\nCREATE SCHEMA cost;\n"
                        "CREATE TABLE cost.meta (name text PRIMARY KEY, value text NOT NULL);\n")
         self.psql("cost", "BEGIN;\n" + rebuild + schema_sql(config["run_join_tags"]) + "COMMIT;\n")
+
+    def write_budgets(self, config: dict) -> None:
+        """Rewrite cost.budgets from the bundle: what isn't there any more goes."""
+        budgets = config.get("budgets") or {}
+        rows = [("total", "total", budgets["total"])] if budgets.get("total") is not None else []
+        rows += [("project", name, usd) for name, usd in sorted((budgets.get("projects") or {}).items())]
+        rows += [("account", name, usd) for name, usd in sorted((budgets.get("accounts") or {}).items())]
+        values = ", ".join(f"({lit(scope)}, {lit(name)}, {float(usd)!r})" for scope, name, usd in rows)
+        self.psql("cost", "BEGIN;\nDELETE FROM cost.budgets;\n"
+                  + (f"INSERT INTO cost.budgets (scope, name, monthly_usd) VALUES {values};\n" if rows else "")
+                  + "COMMIT;\n")
 
     def list_outputs(self, config: dict) -> Dict[str, dict]:
         outputs = {}
@@ -395,6 +559,8 @@ class CostSync:
             self.setup(config)
             listed = self.list_outputs(config)
             loaded = self.loaded()
+            # Only once S3 answered: a run that can't reach it changes nothing.
+            self.write_budgets(config)
         except (RuntimeError, Failed, ValueError, KeyError) as error:
             print(f"monitoring-cost-sync: failed: {error}", file=sys.stderr)
             self.write_metrics(state, config, None, ok=False)

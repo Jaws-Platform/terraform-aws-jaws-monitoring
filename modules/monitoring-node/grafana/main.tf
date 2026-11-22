@@ -68,8 +68,11 @@ locals {
 
   # Dashboards: path under grafana/dashboards/ => JSON. The directory is the
   # Grafana folder, the same folder the host rules go in.
-  module_dashboards = { "Monitoring/host.json" = jsonencode(local.host_dashboard) }
-  dashboards        = merge(local.module_dashboards, var.extra_dashboards)
+  module_dashboards = merge(
+    { "Monitoring/host.json" = jsonencode(local.host_dashboard) },
+    { for path, d in { "Cost/overview.json" = local.cost_overview } : path => jsonencode(d) if local.cost_on },
+  )
+  dashboards = merge(local.module_dashboards, var.extra_dashboards)
 
   # Alerting provisioning files the module renders: path => document (an
   # object, encoded below).
@@ -77,6 +80,7 @@ locals {
     {
       "grafana/provisioning/alerting/rules-host.json"     = local.rules_files.host
       "grafana/provisioning/alerting/rules-pipeline.json" = local.rules_files.pipeline
+      "grafana/provisioning/alerting/rules-cost.json"     = local.rules_files.cost
     },
     local.notification_files,
   )

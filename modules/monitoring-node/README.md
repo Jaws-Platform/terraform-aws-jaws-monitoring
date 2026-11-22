@@ -215,6 +215,12 @@ cost = {
   # normalized_prefix = "normalized"
   # providers         = ["aws", "databricks"]   # which freshness alerts apply
   # run_join_tags     = ["RunId", "TaskId"]     # the tags a run's cost rows carry
+  budgets = {                                  # monthly, in USD
+    total    = 100
+    projects = { braveheart = 60 }
+    accounts = { production = 80 }             # by account id or name
+  }
+  # anomaly_floor_usd = 2                      # a day must also be this much over its norm
 }
 ```
 
@@ -247,6 +253,17 @@ sudo docker exec -it monitoring-postgres-1 psql -U monitoring -d cost
 | `cost.task_runs` | one row per run: its launch metadata, `started_at`, `ended_at`, `outcome` (`swept`, or null while running) |
 | `cost.task_run_costs` | each run's billed cost: the cost rows that carry its join tags |
 | `cost.loads`, `cost.normalizer_runs` | what was loaded, and the normalizer runs seen |
+| `cost.daily` | spend per UTC day, provider, account, project (`(untagged)` without one), environment, service and charge category, with whether the day is `complete` and whether it is a `long_period` charge |
+| `cost.month_to_date` | per scope (`total`, each project, each account): month to date, the forecast, the budget, and both as a share of it |
+| `cost.anomalies` | each of the last three days' spend per total, project and service against the median of the 14 complete days before it |
+| `cost.untagged`, `cost.untagged_new` | untagged spend (tax and credits aside), and each account and service's first untagged day and spend since; `is_new` when that day is the newest or the day before |
+| `cost.budgets`, `cost.as_of` | the budgets from the `cost` input (rewritten every run), and the newest complete day |
+
+**Days and the forecast.**
+
+- Days are UTC calendar days, because AWS bills in UTC. A day is complete 48 hours after it ends; until then its charges are still arriving.
+- The month-end forecast is the month's complete days, plus, for every day not complete yet, what it has so far or the last 7 complete days' average, whichever is more. It is never below what's already spent.
+- A charge for more than a day (a monthly fee, a support plan, often tax) is dated to its period's start. It counts as spent and in the forecast, but not as a day's spend: the average, the anomalies and new untagged spend leave it out, so the 1st of a month isn't an anomaly.
 
 **The pipeline alerts** (label `area = pipeline`, on the host dashboard's
 Pipeline row):
@@ -264,6 +281,29 @@ Pipeline row):
 Until any data has arrived, each clock starts when the node first ran
 cost-sync. A new node isn't alarmed in its first hours, but is once data
 never comes.
+
+**The cost alerts** (label `area = cost`, folder `Cost`, every 5 minutes) are
+SQL on the cost database, one alert per row:
+
+| Rule | Warning | Critical | Set by |
+|---|---|---|---|
+| Budget: month-end forecast | over 100 % of a budget | | `cost.budgets` |
+| Budget: month to date | | over 100 % of a budget | `cost.budgets` |
+| Daily spend anomaly (the total and each project): each of the last three days with data against the median of its 14 complete days before, and over `anomaly_floor_usd` above it. One alert per day judged, so a provider that reports a day late (Databricks) is judged when its day lands | 2× | 4× | `thresholds.anomaly_ratio`, `cost.anomaly_floor_usd` |
+| New untagged spend: an account and service with none in the 14 days before, over the threshold since it started (on the newest day or the day before, so a charge that starts late in a day still counts its next whole day) | over $0.50 | | `thresholds.untagged_daily_usd` |
+
+Each cost alert posts once when it fires, then weekly while it lasts, to the
+`cost` route's channel (or `host`'s): a breached budget stays breached all
+month. A planned expensive run will trip the anomaly alert: silence it first
+(see Silences). A project that spent on fewer than half of its 14 days has a
+median of 0, so only the total can alert on its spending.
+
+**Cost · Overview** (folder `Cost`) shows the last 90 days, filtered by
+provider, account, project and environment. Tiles across the top: month to
+date, forecast and spend against the total budget, yesterday, the month-on-
+month change, untagged spend and the newest complete day. Below them, the
+trend, where the money goes, the budgets, the biggest movers and the
+untagged spend.
 
 ## Recovery
 
@@ -364,7 +404,7 @@ module "monitoring_node" {
 | subnet\_id | A public subnet for the node. The data volume is created in its availability zone, so moving the node to another zone means a new volume. | `string` | n/a | yes |
 | vpc\_id | The VPC of the node's subnet. | `string` | n/a | yes |
 | acme\_email | Optional contact address for Let's Encrypt. | `string` | `null` | no |
-| cost | The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), and the tags a task run's cost rows are joined on. null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it. | <pre>object({<br/>    bucket            = string<br/>    normalized_prefix = optional(string, "normalized")<br/>    providers         = optional(set(string), ["aws", "databricks"])<br/>    run_join_tags     = optional(list(string), ["RunId", "TaskId"])<br/>  })</pre> | `null` | no |
+| cost | The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), the tags a task run's cost rows are joined on, monthly budgets in USD (total, per project, per account by id or name), and the anomaly floor (the day's spend must also be this many USD over its 14-day median). null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it. | <pre>object({<br/>    bucket            = string<br/>    normalized_prefix = optional(string, "normalized")<br/>    providers         = optional(set(string), ["aws", "databricks"])<br/>    run_join_tags     = optional(list(string), ["RunId", "TaskId"])<br/>    budgets = optional(object({<br/>      total    = optional(number)<br/>      projects = optional(map(number), {})<br/>      accounts = optional(map(number), {})<br/>    }), {})<br/>    anomaly_floor_usd = optional(number, 2)<br/>  })</pre> | `null` | no |
 | data\_volume\_gb | Size of the data volume: Prometheus, Postgres, Grafana and Caddy's state, kept when the instance is replaced. | `number` | `30` | no |
 | domain | The name Grafana is served at over HTTPS (Caddy, Let's Encrypt). Null: no ingress at all; reach Grafana through a Session Manager port forward. | `string` | `null` | no |
 | extra\_alert\_rules | More alert rules: a name to a Grafana alerting provisioning document (YAML), provisioned as rules-extra-<name>.json. Every rule needs labels area (host, pipeline or cost) and severity (warning or critical). To remove a rule, keep its uid under deleteRules in the same document. | `map(string)` | `{}` | no |
@@ -375,7 +415,7 @@ module "monitoring_node" {
 | root\_volume\_gb | Size of the root volume: the OS, the images and a 2 GB swap file. | `number` | `12` | no |
 | slack | Slack notifications: channels (name => the SSM SecureString parameter holding its incoming-webhook URL) and routes (area => channel; areas are host, pipeline and cost, and host is required, since the root policy uses it). null means no notifications: alerts show in Grafana only. Adding a channel is one webhook parameter and one line here. | <pre>object({<br/>    channels = map(string)<br/>    routes   = map(string)<br/>  })</pre> | `null` | no |
 | snapshots | Daily snapshots of the data volume (Data Lifecycle Manager), at time\_utc, keeping the last `keep`. | <pre>object({<br/>    enabled  = optional(bool, false)<br/>    time_utc = optional(string, "03:00")<br/>    keep     = optional(number, 7)<br/>  })</pre> | `{}` | no |
-| thresholds | Alert thresholds, which also set the dashboard's tile colours and dashed lines. Every attribute is optional and defaults to spec 6.8's numbers. Percentages are of the resource; cpu\_credits\_percent is of the instance type's maximum balance; container\_restarts counts restarts in 15 minutes; the *\_days are days. prometheus\_history\_days warns only while Prometheus is above prometheus\_size\_percent of its size cap, i.e. when the cap is costing history. | <pre>object({<br/>    cpu_percent               = optional(object({ warning = number, critical = number }), { warning = 60, critical = 85 })<br/>    cpu_credits_percent       = optional(object({ warning = number, critical = number }), { warning = 25, critical = 5 })<br/>    memory_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    swap_percent              = optional(object({ warning = number, critical = number }), { warning = 25, critical = 75 })<br/>    disk_percent              = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    disk_full_days            = optional(object({ warning = number, critical = number }), { warning = 7, critical = 2 })<br/>    inodes_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    prometheus_size_percent   = optional(object({ warning = number }), { warning = 85 })<br/>    prometheus_history_days   = optional(object({ warning = number }), { warning = 90 })<br/>    container_restarts        = optional(object({ warning = number, critical = number }), { warning = 1, critical = 3 })<br/>    tls_days                  = optional(object({ warning = number, critical = number }), { warning = 14, critical = 3 })<br/>    os_release_update_days    = optional(object({ warning = number }), { warning = 7 })<br/>    normalizer_hours          = optional(object({ warning = number, critical = number }), { warning = 3, critical = 12 })<br/>    aws_charge_days           = optional(object({ warning = number, critical = number }), { warning = 3, critical = 5 })<br/>    databricks_delivery_hours = optional(object({ warning = number, critical = number }), { warning = 36, critical = 60 })<br/>    cost_sync_hours           = optional(object({ warning = number, critical = number }), { warning = 2, critical = 6 })<br/>  })</pre> | `{}` | no |
+| thresholds | Alert thresholds, which also set the dashboard's tile colours and dashed lines. Every attribute is optional and defaults to spec 6.8's numbers. Percentages are of the resource; cpu\_credits\_percent is of the instance type's maximum balance; container\_restarts counts restarts in 15 minutes; the *\_days are days. prometheus\_history\_days warns only while Prometheus is above prometheus\_size\_percent of its size cap, i.e. when the cap is costing history. | <pre>object({<br/>    cpu_percent               = optional(object({ warning = number, critical = number }), { warning = 60, critical = 85 })<br/>    cpu_credits_percent       = optional(object({ warning = number, critical = number }), { warning = 25, critical = 5 })<br/>    memory_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    swap_percent              = optional(object({ warning = number, critical = number }), { warning = 25, critical = 75 })<br/>    disk_percent              = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    disk_full_days            = optional(object({ warning = number, critical = number }), { warning = 7, critical = 2 })<br/>    inodes_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    prometheus_size_percent   = optional(object({ warning = number }), { warning = 85 })<br/>    prometheus_history_days   = optional(object({ warning = number }), { warning = 90 })<br/>    container_restarts        = optional(object({ warning = number, critical = number }), { warning = 1, critical = 3 })<br/>    tls_days                  = optional(object({ warning = number, critical = number }), { warning = 14, critical = 3 })<br/>    os_release_update_days    = optional(object({ warning = number }), { warning = 7 })<br/>    normalizer_hours          = optional(object({ warning = number, critical = number }), { warning = 3, critical = 12 })<br/>    aws_charge_days           = optional(object({ warning = number, critical = number }), { warning = 3, critical = 5 })<br/>    databricks_delivery_hours = optional(object({ warning = number, critical = number }), { warning = 36, critical = 60 })<br/>    cost_sync_hours           = optional(object({ warning = number, critical = number }), { warning = 2, critical = 6 })<br/>    anomaly_ratio             = optional(object({ warning = number, critical = number }), { warning = 2, critical = 4 })<br/>    untagged_daily_usd        = optional(object({ warning = number }), { warning = 0.5 })<br/>  })</pre> | `{}` | no |
 | zone\_id | The Route 53 hosted zone of `domain`. The node may only upsert its own A record there, at every boot. | `string` | `null` | no |
 
 ## Outputs

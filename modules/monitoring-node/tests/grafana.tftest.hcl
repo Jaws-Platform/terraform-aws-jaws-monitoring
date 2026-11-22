@@ -31,6 +31,8 @@ variables {
     aws_charge_days           = { warning = 3, critical = 5 }
     databricks_delivery_hours = { warning = 36, critical = 60 }
     cost_sync_hours           = { warning = 2, critical = 6 }
+    anomaly_ratio             = { warning = 2, critical = 4 }
+    untagged_daily_usd        = { warning = 0.5 }
   }
 }
 
@@ -1183,5 +1185,235 @@ run "an_over_ceiling_run_posts_once_a_week" {
   assert {
     condition     = length([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : r if jsonencode(r.object_matchers) == jsonencode([["alertname", "=", "Task run over its ceiling — critical"]]) && r.receiver == "slack-costs" && r.repeat_interval == "168h"]) == 1
     error_message = "an over-ceiling run is reported once, to the pipeline channel, not every 4 hours while its bill stands"
+  }
+}
+
+run "the_overview_follows_the_house_style" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).uid == "cost-overview" && jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).title == "Cost · Overview" && jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).editable == false && jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).refresh == "30s" && jsonencode(jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).time) == jsonencode({ from = "now-90d", to = "now" })
+    error_message = "the overview is read-only, over the last 90 days, refreshed every 30 seconds"
+  }
+
+  assert {
+    condition     = jsonencode([for v in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).templating.list : v.name]) == jsonencode(["provider", "account", "project", "environment"]) && alltrue([for v in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).templating.list : v.datasource.uid == "cost" && v.multi && v.includeAll])
+    error_message = "four multi-value filters, each from the cost database"
+  }
+
+  assert {
+    condition     = length(distinct([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p.id])) == length(jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels) && alltrue([for i, p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p.type != "row" || try(jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels[i + 1].type, "") == "text"]) && alltrue([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : contains(["row", "text"], p.type) || trimspace(try(p.description, "")) != ""])
+    error_message = "unique ids, every row opens with text, every panel has a description"
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p if contains([32, 42, 53], p.id)]) == 3
+    error_message = "the panels the cost rules link are there"
+  }
+}
+
+run "every_cost_panel_reads_the_cost_database" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = alltrue(flatten([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : [for t in try(p.targets, []) : t.datasource.uid == "cost" && strcontains(t.rawSql, "cost.")]]))
+    error_message = "every query reads the cost database's own objects"
+  }
+}
+
+run "the_overview_needs_cost" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = !contains(keys(output.files), "grafana/dashboards/Cost/overview.json")
+    error_message = "a host-only node has no cost dashboards"
+  }
+}
+
+run "the_budget_and_anomaly_panels_state_their_numbers" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost       = { providers = ["aws", "databricks"] }
+    thresholds = merge(var.thresholds, { anomaly_ratio = { warning = 3, critical = 6 } })
+  }
+
+  assert {
+    condition     = strcontains(one([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p.description if p.id == 32]), "100")
+    error_message = "the budgets table says when a budget alerts"
+  }
+
+  assert {
+    condition     = strcontains(one([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p.description if p.id == 42]), "3") && strcontains(one([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p.description if p.id == 42]), "6")
+    error_message = "the movers table states the anomaly thresholds"
+  }
+}
+
+run "cost_rules_run_sql_on_the_cost_database" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = length(flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules])) == 5 && alltrue([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : one([for d in r.data : d if d.refId == "A"]).datasourceUid == "cost" && one([for d in r.data : d if d.refId == "A"]).model.format == "table" && strcontains(one([for d in r.data : d if d.refId == "A"]).model.rawSql, "FROM cost.")])
+    error_message = "all five cost rules are SQL on the cost database, in table form"
+  }
+
+  assert {
+    condition     = strcontains(one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-anomaly-warning"]).data : d if d.refId == "A"]).model.rawSql, "excess > 2")
+    error_message = "the anomaly rule carries the default floor"
+  }
+
+  assert {
+    condition     = alltrue([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r.labels.area == "cost" && endswith(r.for, "m") && tonumber(trimsuffix(r.for, "m")) >= 2]) && jsonencode([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : { name = gr.name, folder = gr.folder, interval = gr.interval }]) == jsonencode([{ name = "cost", folder = "Cost", interval = "5m" }])
+    error_message = "area cost, at least 2 minutes, in the Cost folder every 5 minutes"
+  }
+}
+
+run "the_anomaly_floor_reaches_the_rule" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws"], anomaly_floor_usd = 5 }
+  }
+
+  assert {
+    condition     = strcontains(one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-anomaly-critical"]).data : d if d.refId == "A"]).model.rawSql, "excess > 5")
+    error_message = "the anomaly floor is the caller's"
+  }
+}
+
+run "cost_rules_link_the_overview" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = alltrue([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r.annotations.__dashboardUid__ == "cost-overview" && length([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p if tostring(p.id) == r.annotations.__panelId__]) == 1])
+    error_message = "each cost rule links its Overview panel"
+  }
+}
+
+run "the_cost_rules_need_cost" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = length(flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules])) == 0 && length([for d in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).deleteRules : d.uid]) == 5
+    error_message = "without cost, every cost rule is deleted"
+  }
+}
+
+run "cost_thresholds_reach_the_rules" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost       = { providers = ["aws", "databricks"] }
+    thresholds = merge(var.thresholds, { anomaly_ratio = { warning = 3, critical = 6 }, untagged_daily_usd = { warning = 1.5 } })
+  }
+
+  assert {
+    condition     = one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-anomaly-warning"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 3 && one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-anomaly-critical"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 6 && one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-untagged-new-warning"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 1.5 && one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-budget-spent-critical"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 100
+    error_message = "the cost thresholds reach the rules; budgets alert past 100 %"
+  }
+}
+
+run "cost_alerts_post_once_then_weekly" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost  = { providers = ["aws"] }
+    slack = { channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }, routes = { host = "platform", cost = "costs" } }
+  }
+
+  assert {
+    condition     = jsonencode([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : [r.receiver, lookup(r, "repeat_interval", "")] if jsonencode(r.object_matchers) == jsonencode([["area", "=", "cost"]])]) == jsonencode([["slack-costs", "168h"]])
+    error_message = "a breached budget stays breached, a judged day stays judged: the cost alerts post once, then weekly, to the cost channel"
+  }
+}
+
+run "cost_alerts_fall_back_to_the_host_channel" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost  = { providers = ["aws"] }
+    slack = { channels = { platform = "/acme/monitoring/slack/platform" }, routes = { host = "platform" } }
+  }
+
+  assert {
+    condition     = length([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : r if jsonencode(r.object_matchers) == jsonencode([["area", "=", "cost"]]) && r.receiver == "slack-platform" && r.repeat_interval == "168h"]) == 1
+    error_message = "with no cost channel, the cost alerts go to the host channel, still weekly"
+  }
+}
+
+run "cost_rules_judge_each_recent_day_and_each_new_pair" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws"] }
+  }
+
+  assert {
+    condition     = strcontains(one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-anomaly-warning"]).data : d if d.refId == "A"]).model.rawSql, "day::text AS day") && strcontains(one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-untagged-new-warning"]).data : d if d.refId == "A"]).model.rawSql, "WHERE is_new")
+    error_message = "each judged day is its own alert, and an untagged pair is new on its first or second day"
   }
 }
