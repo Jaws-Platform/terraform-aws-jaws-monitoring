@@ -45,7 +45,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-COST_SCHEMA_VERSION = "2"
+COST_SCHEMA_VERSION = "3"
 DEFAULT_PSQL = "docker exec -i monitoring-postgres-1 psql -U monitoring -v ON_ERROR_STOP=1"
 DEFAULT_TEXTFILE_DIR = "/var/lib/node_exporter/textfile"
 METRICS_FILE = "cost_sync.prom"
@@ -202,12 +202,12 @@ CREATE TABLE IF NOT EXISTS cost.budgets (scope text NOT NULL, name text NOT NULL
 CREATE OR REPLACE VIEW cost.daily AS
 SELECT day, day <= cost.last_complete() AS complete, long_period,
        provider, sub_account_id AS account_id, sub_account_name AS account_name,
-       coalesce(project, '(untagged)') AS project, environment, service_name AS service, charge_category,
+       coalesce(project, '(untagged)') AS project, environment, component, service_name AS service, charge_category,
        sum(billed_cost) AS billed_cost
 FROM cost.lines
 WHERE day <= cost.today()
 GROUP BY day, long_period, provider, sub_account_id, sub_account_name, coalesce(project, '(untagged)'),
-         environment, service_name, charge_category;
+         environment, component, service_name, charge_category;
 
 CREATE OR REPLACE VIEW cost.as_of AS
 SELECT max(day) AS day FROM cost.lines WHERE day <= cost.last_complete();

@@ -18,11 +18,13 @@ locals {
   # expression the variable filters.
   cost_board_vars = {
     overview = local.overview_vars
+    project  = local.project_vars
   }
 
   # Board => { uid, title, time, stats, series, bars, tables, pies, rows }.
   cost_boards = {
     overview = local.overview_board
+    project  = local.project_board
   }
 
   cost_filter = {

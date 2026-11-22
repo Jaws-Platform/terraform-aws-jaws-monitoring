@@ -70,7 +70,7 @@ locals {
   # Grafana folder, the same folder the host rules go in.
   module_dashboards = merge(
     { "Monitoring/host.json" = jsonencode(local.host_dashboard) },
-    { for path, d in { "Cost/overview.json" = local.cost_dashboards.overview } : path => jsonencode(d) if local.cost_on },
+    { for path, d in { "Cost/overview.json" = local.cost_dashboards.overview, "Cost/project.json" = local.cost_dashboards.project } : path => jsonencode(d) if local.cost_on },
   )
   dashboards = merge(local.module_dashboards, var.extra_dashboards)
 

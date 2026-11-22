@@ -148,7 +148,7 @@ before="$(q 'select max(loaded_at) from cost.loads')"
 q "update cost.meta set value = '0' where name = 'schema_version'" > /dev/null
 sync || fail "a_schema_version_change_rebuilds: the run failed"
 expect rebuilt "reloaded outputs" "$(q "select count(*) from cost.loads where loaded_at > '$before'")" 2
-expect rebuilt "version" "$(q "select value from cost.meta where name = 'schema_version'")" 2
+expect rebuilt "version" "$(q "select value from cost.meta where name = 'schema_version'")" 3
 expect rebuilt "rows" "$(q 'select count(*) from cost.lines')" 1
 echo "cost sync (postgres): a_schema_version_change_rebuilds"
 
@@ -252,5 +252,20 @@ for view in cost.month_to_date cost.anomalies cost.untagged_new cost.as_of; do
   [ "$got" -lt 1000 ] || fail "the_model_reads_only_its_window: $view read $got rows of cost.lines"
 done
 echo "cost sync (postgres): the_model_reads_only_its_window"
+
+# ------------------------------------------------------- the cost views
+# Fresh tables and the views' rows (tests/cost_views_rows.sql).
+q 'truncate cost.lines, cost.run_events, cost.loads' > /dev/null
+docker exec -i "$container" psql -U monitoring -d cost -X -q -v ON_ERROR_STOP=1 < "$here/cost_views_rows.sql" > /dev/null
+views_config() { # [databricks workspace tag]
+  printf '{"bucket": "acme-billing", "prefix": "normalized", "providers": ["aws", "databricks"], "run_join_tags": ["RunId", "TaskId"], "databricks_workspace_tag": "%s"}' "${1:-Workspace}" \
+    > "$root/data/config/current/cost-sync/config.json"
+}
+views_config
+sync || fail "the cost views: the run failed"
+
+# the_daily_view_carries_the_component
+expect component "web-app on Nov 20" "$(at "$now" "select string_agg(component || '=' || billed_cost, ',' order by component) from cost.daily where project = 'web-app' and day = '2026-11-20'")" "api=1,site=2"
+echo "cost sync (postgres): the_daily_view_carries_the_component"
 
 echo "cost sync (postgres): OK"

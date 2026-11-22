@@ -1445,3 +1445,65 @@ run "cost_rules_judge_each_recent_day_and_each_new_pair" {
     error_message = "each judged day is its own alert, and an untagged pair is new on its first or second day"
   }
 }
+
+run "the_project_board_follows_the_house_style" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = jsondecode(output.files["grafana/dashboards/Cost/project.json"]).uid == "cost-project" && jsondecode(output.files["grafana/dashboards/Cost/project.json"]).title == "Cost · Project" && jsondecode(output.files["grafana/dashboards/Cost/project.json"]).editable == false && jsondecode(output.files["grafana/dashboards/Cost/project.json"]).refresh == "30s" && jsonencode(jsondecode(output.files["grafana/dashboards/Cost/project.json"]).time) == jsonencode({ from = "now-90d", to = "now" }) && contains(jsondecode(output.files["grafana/dashboards/Cost/project.json"]).tags, "cost")
+    error_message = "read-only, tagged cost, over the right range, refreshed every 30 seconds"
+  }
+
+  assert {
+    condition     = jsonencode([for v in jsondecode(output.files["grafana/dashboards/Cost/project.json"]).templating.list : v.name]) == jsonencode(["project", "environment"]) && alltrue([for v in jsondecode(output.files["grafana/dashboards/Cost/project.json"]).templating.list : v.datasource.uid == "cost"]) && one([for v in jsondecode(output.files["grafana/dashboards/Cost/project.json"]).templating.list : v if v.name == "project"]).includeAll == false
+    error_message = "its filters, each from the cost database"
+  }
+
+  assert {
+    condition     = length(distinct([for p in jsondecode(output.files["grafana/dashboards/Cost/project.json"]).panels : p.id])) == length(jsondecode(output.files["grafana/dashboards/Cost/project.json"]).panels) && alltrue([for i, p in jsondecode(output.files["grafana/dashboards/Cost/project.json"]).panels : p.type != "row" || try(jsondecode(output.files["grafana/dashboards/Cost/project.json"]).panels[i + 1].type, "") == "text"]) && alltrue([for p in jsondecode(output.files["grafana/dashboards/Cost/project.json"]).panels : contains(["row", "text"], p.type) || trimspace(try(p.description, "")) != ""])
+    error_message = "unique ids, every row opens with text, every panel has a description"
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Cost/project.json"]).panels : p if contains([12, 22, 32], p.id)]) == 3
+    error_message = "its main panels are there"
+  }
+}
+
+run "the_project_board_draws_its_budget" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = length([for o in one([for p in jsondecode(output.files["grafana/dashboards/Cost/project.json"]).panels : p if p.id == 12]).fieldConfig.overrides : o if o.matcher.options == "budget" && length([for pr in o.properties : pr if pr.id == "custom.lineStyle" && try(pr.value.fill, "") == "dash"]) == 1]) == 1
+    error_message = "the budget is a dashed line on the month's running spend"
+  }
+}
+
+run "the_project_board_needs_cost" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = !contains(keys(output.files), "grafana/dashboards/Cost/project.json")
+    error_message = "a host-only node has no project dashboard"
+  }
+}
