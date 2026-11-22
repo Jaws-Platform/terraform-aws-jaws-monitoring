@@ -21,6 +21,7 @@ variable "subnet_id" {
 variable "instance_type" {
   description = "The instance type, arm64 (Graviton). A T type runs with standard CPU credits, so a burst never bills extra; watch its credit balance."
   type        = string
+  nullable    = false
   default     = "t9g.medium"
 }
 
@@ -37,6 +38,7 @@ variable "ami_name" {
 variable "root_volume_gb" {
   description = "Size of the root volume: the OS, the images and a 2 GB swap file."
   type        = number
+  nullable    = false
   default     = 12
 
   validation {
@@ -48,6 +50,7 @@ variable "root_volume_gb" {
 variable "data_volume_gb" {
   description = "Size of the data volume: Prometheus, Postgres, Grafana and Caddy's state, kept when the instance is replaced."
   type        = number
+  nullable    = false
   default     = 30
 
   validation {
@@ -93,7 +96,8 @@ variable "prometheus_retention" {
     time    = optional(string, "365d")
     size_gb = optional(number, 12)
   })
-  default = {}
+  default  = {}
+  nullable = false
 
   validation {
     condition     = var.prometheus_retention.size_gb >= 1
@@ -108,7 +112,8 @@ variable "snapshots" {
     time_utc = optional(string, "03:00")
     keep     = optional(number, 7)
   })
-  default = {}
+  default  = {}
+  nullable = false
 
   validation {
     condition     = can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.snapshots.time_utc)) && var.snapshots.keep >= 1
@@ -150,12 +155,14 @@ variable "schedule" {
 variable "images" {
   description = "Container images to use instead of the module's digest-pinned defaults, by service name (see the README)."
   type        = map(string)
+  nullable    = false
   default     = {}
 }
 
 variable "extra_dashboards" {
   description = "More dashboards to provision: \"<Folder>/<name>.json\" (the folder is created in Grafana) to the dashboard's JSON, which needs a uid and a title."
   type        = map(string)
+  nullable    = false
   default     = {}
 
   validation {
@@ -167,6 +174,7 @@ variable "extra_dashboards" {
 variable "extra_alert_rules" {
   description = "More alert rules: a name to a Grafana alerting provisioning document (YAML), provisioned as rules-extra-<name>.json. Every rule needs labels area (host, pipeline or cost) and severity (warning or critical). To remove a rule, keep its uid under deleteRules in the same document."
   type        = map(string)
+  nullable    = false
   default     = {}
 
   validation {
@@ -197,7 +205,8 @@ variable "thresholds" {
     anomaly_ratio             = optional(object({ warning = number, critical = number }), { warning = 2, critical = 4 })
     untagged_daily_usd        = optional(object({ warning = number }), { warning = 0.5 })
   })
-  default = {}
+  default  = {}
+  nullable = false
 
   validation {
     condition = alltrue([
