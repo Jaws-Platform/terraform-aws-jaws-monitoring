@@ -21,6 +21,7 @@ variable "subnet_id" {
 variable "instance_type" {
   description = "The instance type, arm64 (Graviton). A T type runs with standard CPU credits, so a burst never bills extra; watch its credit balance."
   type        = string
+  nullable    = false
   default     = "t9g.medium"
 }
 
@@ -37,6 +38,7 @@ variable "ami_name" {
 variable "root_volume_gb" {
   description = "Size of the root volume: the OS, the images and a 2 GB swap file."
   type        = number
+  nullable    = false
   default     = 12
 
   validation {
@@ -48,6 +50,7 @@ variable "root_volume_gb" {
 variable "data_volume_gb" {
   description = "Size of the data volume: Prometheus, Postgres, Grafana and Caddy's state, kept when the instance is replaced."
   type        = number
+  nullable    = false
   default     = 30
 
   validation {
@@ -93,7 +96,8 @@ variable "prometheus_retention" {
     time    = optional(string, "365d")
     size_gb = optional(number, 12)
   })
-  default = {}
+  default  = {}
+  nullable = false
 
   validation {
     condition     = var.prometheus_retention.size_gb >= 1
@@ -102,24 +106,68 @@ variable "prometheus_retention" {
 }
 
 variable "snapshots" {
-  description = "Daily snapshots of the data volume (Data Lifecycle Manager), at time_utc, keeping the last `keep`."
+  description = "Daily snapshots of the data volume (AWS Backup), kept `keep` days. Without a schedule they run at time_utc (HH:MM); with one, an hour after the stop in the schedule's time zone (03:00 when that falls in 01:00-02:59), so they capture disks shut down cleanly."
   type = object({
     enabled  = optional(bool, false)
     time_utc = optional(string, "03:00")
     keep     = optional(number, 7)
   })
-  default = {}
+  default  = {}
+  nullable = false
+
+  validation {
+    condition     = can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.snapshots.time_utc)) && var.snapshots.keep >= 1
+    error_message = "snapshots.time_utc is HH:MM (UTC), and snapshots.keep is at least 1 day."
+  }
+}
+
+variable "schedule" {
+  description = "Off-hours: the node runs from on to off on the given days, in timezone (an IANA name), and is stopped otherwise. Whole hours, on before off, off may be 24:00 (midnight at the end of the day), at least 4 hours on, days from mon to sun. Avoid 01:00-03:00, when daylight saving changes. null runs the node all day."
+  type = object({
+    timezone = string
+    days     = list(string)
+    on       = string
+    off      = string
+  })
+  default = null
+
+  validation {
+    condition     = var.schedule == null ? true : can(regex("^([01][0-9]|2[0-3]):00$", var.schedule.on)) && can(regex("^(([01][0-9]|2[0-3]):00|24:00)$", var.schedule.off))
+    error_message = "schedule.on and schedule.off are whole hours, HH:00 (off may be 24:00)."
+  }
+
+  validation {
+    condition     = var.schedule == null ? true : try(tonumber(substr(var.schedule.off, 0, 2)) - tonumber(substr(var.schedule.on, 0, 2)) >= 4, false)
+    error_message = "schedule.on is before schedule.off on the same day (no overnight windows), with at least 4 hours on."
+  }
+
+  validation {
+    condition     = var.schedule == null ? true : !(var.schedule.on == "00:00" && var.schedule.off == "24:00")
+    error_message = "A whole-day schedule (00:00 to 24:00) would start and stop the node at the same midnight; leave schedule null to run all day."
+  }
+
+  validation {
+    condition     = var.schedule == null ? true : length(var.schedule.days) > 0 && length(distinct(var.schedule.days)) == length(var.schedule.days) && alltrue([for d in var.schedule.days : contains(["mon", "tue", "wed", "thu", "fri", "sat", "sun"], d)])
+    error_message = "schedule.days is one or more unique days: mon, tue, wed, thu, fri, sat, sun."
+  }
+
+  validation {
+    condition     = var.schedule == null ? true : length(trimspace(var.schedule.timezone)) > 0
+    error_message = "schedule.timezone is an IANA time zone, such as America/Denver."
+  }
 }
 
 variable "images" {
   description = "Container images to use instead of the module's digest-pinned defaults, by service name (see the README)."
   type        = map(string)
+  nullable    = false
   default     = {}
 }
 
 variable "extra_dashboards" {
   description = "More dashboards to provision: \"<Folder>/<name>.json\" (the folder is created in Grafana) to the dashboard's JSON, which needs a uid and a title."
   type        = map(string)
+  nullable    = false
   default     = {}
 
   validation {
@@ -131,6 +179,7 @@ variable "extra_dashboards" {
 variable "extra_alert_rules" {
   description = "More alert rules: a name to a Grafana alerting provisioning document (YAML), provisioned as rules-extra-<name>.json. Every rule needs labels area (host, pipeline or cost) and severity (warning or critical). To remove a rule, keep its uid under deleteRules in the same document."
   type        = map(string)
+  nullable    = false
   default     = {}
 
   validation {
@@ -161,7 +210,8 @@ variable "thresholds" {
     anomaly_ratio             = optional(object({ warning = number, critical = number }), { warning = 2, critical = 4 })
     untagged_daily_usd        = optional(object({ warning = number }), { warning = 0.5 })
   })
-  default = {}
+  default  = {}
+  nullable = false
 
   validation {
     condition = alltrue([

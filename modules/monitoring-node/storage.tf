@@ -17,19 +17,32 @@ resource "aws_volume_attachment" "data" {
 }
 
 # ------------------------------------------------------------- snapshots
+# AWS Backup, not Data Lifecycle Manager: a backup plan takes a time zone, so
+# with a schedule the snapshot lands in the off window all year (6.10), after a
+# clean shutdown. DLM takes only UTC times, and Terraform can't convert one.
+# Without a schedule it runs at time_utc. The vault refuses to be destroyed
+# while it holds recovery points, so a stray destroy never deletes the backups.
+
+locals {
+  snapshot_after_stop = local.scheduled ? (local.schedule_off_hour + 1) % 24 : null
+  # 01:00-02:59 is when daylight saving changes: a run there can be skipped.
+  snapshot_hour     = local.scheduled ? (local.snapshot_after_stop >= 1 && local.snapshot_after_stop < 3 ? 3 : local.snapshot_after_stop) : tonumber(split(":", var.snapshots.time_utc)[0])
+  snapshot_minute   = local.scheduled ? 0 : tonumber(split(":", var.snapshots.time_utc)[1])
+  snapshot_timezone = local.scheduled ? var.schedule.timezone : "Etc/UTC"
+}
 
 resource "aws_iam_role" "snapshots" {
   count = var.snapshots.enabled ? 1 : 0
 
   name        = "${var.name}-snapshots"
-  description = "Data Lifecycle Manager: snapshots of ${local.data_volume_name}"
+  description = "AWS Backup: daily snapshots of ${local.data_volume_name}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
         Effect    = "Allow"
-        Principal = { Service = "dlm.amazonaws.com" }
+        Principal = { Service = "backup.amazonaws.com" }
         Action    = "sts:AssumeRole"
       },
     ]
@@ -42,37 +55,46 @@ resource "aws_iam_role_policy_attachment" "snapshots" {
   count = var.snapshots.enabled ? 1 : 0
 
   role       = aws_iam_role.snapshots[0].name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
 }
 
-resource "aws_dlm_lifecycle_policy" "snapshots" {
+resource "aws_backup_vault" "snapshots" {
   count = var.snapshots.enabled ? 1 : 0
 
-  description        = "Daily snapshots of ${local.data_volume_name}"
-  execution_role_arn = aws_iam_role.snapshots[0].arn
-  state              = "ENABLED"
+  name          = "${var.name}-snapshots"
+  force_destroy = false
 
-  policy_details {
-    resource_types = ["VOLUME"]
-    target_tags    = { Name = local.data_volume_name }
+  tags = local.tags
+}
 
-    schedule {
-      name      = "daily"
-      copy_tags = true
+resource "aws_backup_plan" "snapshots" {
+  count = var.snapshots.enabled ? 1 : 0
 
-      create_rule {
-        interval      = 24
-        interval_unit = "HOURS"
-        times         = [var.snapshots.time_utc]
-      }
+  name = "${var.name}-snapshots"
 
-      retain_rule {
-        count = var.snapshots.keep
-      }
+  rule {
+    rule_name                    = "daily"
+    target_vault_name            = aws_backup_vault.snapshots[0].name
+    schedule                     = "cron(${local.snapshot_minute} ${local.snapshot_hour} ? * * *)"
+    schedule_expression_timezone = local.snapshot_timezone
+    start_window                 = 60
+    completion_window            = 180
+
+    lifecycle {
+      delete_after = var.snapshots.keep
     }
   }
 
   tags = local.tags
+}
+
+resource "aws_backup_selection" "snapshots" {
+  count = var.snapshots.enabled ? 1 : 0
+
+  name         = "${var.name}-data"
+  plan_id      = aws_backup_plan.snapshots[0].id
+  iam_role_arn = aws_iam_role.snapshots[0].arn
+  resources    = [aws_ebs_volume.data.arn]
 }
 
 # ---------------------------------------------------------- config bucket

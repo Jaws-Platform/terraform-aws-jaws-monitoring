@@ -41,6 +41,18 @@ mock_provider "aws" {
       id = "vol-0123456789abcdef0"
     }
   }
+
+  mock_resource "aws_sns_topic" {
+    defaults = {
+      arn = "arn:aws:sns:us-east-1:123456789012:acme-monitoring-watchdog"
+    }
+  }
+
+  mock_resource "aws_lambda_function" {
+    defaults = {
+      arn = "arn:aws:lambda:us-east-1:123456789012:function:acme-monitoring-watchdog"
+    }
+  }
 }
 
 variables {
@@ -235,16 +247,16 @@ run "the_parameters_name_the_bundle" {
   }
 }
 
-run "snapshots_are_opt_in" {
+run "without_snapshots_there_is_no_backup_plan" {
   command = plan
 
   assert {
-    condition     = length(aws_dlm_lifecycle_policy.snapshots) == 0
+    condition     = length(aws_backup_plan.snapshots) == 0 && length(aws_backup_vault.snapshots) == 0 && length(aws_backup_selection.snapshots) == 0
     error_message = "no snapshots unless asked for"
   }
 }
 
-run "snapshots_when_enabled_keep_a_week" {
+run "snapshots_without_a_schedule_run_at_time_utc" {
   command = plan
 
   variables {
@@ -252,11 +264,75 @@ run "snapshots_when_enabled_keep_a_week" {
   }
 
   assert {
-    condition = (length(aws_dlm_lifecycle_policy.snapshots) == 1
-      && aws_dlm_lifecycle_policy.snapshots[0].policy_details[0].target_tags == tomap({ Name = "acme-monitoring-data" })
-      && aws_dlm_lifecycle_policy.snapshots[0].policy_details[0].schedule[0].create_rule[0].times == tolist(["03:00"])
-    && aws_dlm_lifecycle_policy.snapshots[0].policy_details[0].schedule[0].retain_rule[0].count == 7)
-    error_message = "one daily snapshot of the data volume at 03:00 UTC, the last 7 kept"
+    condition     = one(aws_backup_plan.snapshots[0].rule).schedule == "cron(0 3 ? * * *)" && one(aws_backup_plan.snapshots[0].rule).schedule_expression_timezone == "Etc/UTC"
+    error_message = "one daily snapshot at 03:00 UTC"
+  }
+}
+
+run "with_a_schedule_snapshots_run_after_the_stop" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true }
+    schedule  = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = one(aws_backup_plan.snapshots[0].rule).schedule == "cron(0 3 ? * * *)" && one(aws_backup_plan.snapshots[0].rule).schedule_expression_timezone == "America/Denver"
+    error_message = "a stop at midnight snapshots at 03:00 local: an hour after it, past the hours daylight saving changes"
+  }
+}
+
+run "an_evening_stop_snapshots_an_hour_later" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true }
+    schedule  = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri"], on = "08:00", off = "20:00" }
+  }
+
+  assert {
+    condition     = one(aws_backup_plan.snapshots[0].rule).schedule == "cron(0 21 ? * * *)"
+    error_message = "a 20:00 stop snapshots at 21:00"
+  }
+}
+
+run "snapshots_keep_the_last_n_days" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true, keep = 7 }
+  }
+
+  assert {
+    condition     = one(one(aws_backup_plan.snapshots[0].rule).lifecycle).delete_after == 7 && one(aws_backup_plan.snapshots[0].rule).target_vault_name == aws_backup_vault.snapshots[0].name
+    error_message = "each daily snapshot is kept 7 days, in the node's vault"
+  }
+}
+
+run "snapshots_back_up_only_the_data_volume" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true }
+  }
+
+  assert {
+    condition     = tolist(aws_backup_selection.snapshots[0].resources) == tolist([aws_ebs_volume.data.arn])
+    error_message = "the backup takes the data volume, not the root volume"
+  }
+}
+
+run "the_snapshot_vault_keeps_its_recovery_points" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true }
+  }
+
+  assert {
+    condition     = aws_backup_vault.snapshots[0].force_destroy == false && aws_backup_vault.snapshots[0].name == "acme-monitoring-snapshots"
+    error_message = "a stray destroy never deletes the backups: the vault refuses while it holds any"
   }
 }
 
@@ -779,4 +855,208 @@ run "rejects_an_anomaly_ratio_of_one" {
   }
 
   expect_failures = [var.thresholds]
+}
+
+run "without_a_schedule_the_node_runs_all_day" {
+  command = plan
+
+  assert {
+    condition     = length(aws_scheduler_schedule.start) == 0 && length(aws_scheduler_schedule.stop) == 0 && length(aws_iam_role.schedule) == 0
+    error_message = "no schedule means always on: nothing starts or stops the node"
+  }
+}
+
+run "a_schedule_starts_and_stops_the_node" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = aws_scheduler_schedule.start[0].schedule_expression == "cron(0 8 ? * MON,TUE,WED,THU,FRI,SAT,SUN *)" && aws_scheduler_schedule.stop[0].schedule_expression == "cron(0 0 ? * TUE,WED,THU,FRI,SAT,SUN,MON *)"
+    error_message = "it starts at 08:00 each day, and a 24:00 stop fires at 00:00 on each next day"
+  }
+
+  assert {
+    condition     = alltrue([for s in [aws_scheduler_schedule.start[0], aws_scheduler_schedule.stop[0]] : s.schedule_expression_timezone == "America/Denver" && s.flexible_time_window[0].mode == "OFF"])
+    error_message = "both run on the dot, in the schedule's time zone"
+  }
+
+  assert {
+    condition     = aws_scheduler_schedule.start[0].target[0].arn == "arn:aws:scheduler:::aws-sdk:ec2:startInstances" && aws_scheduler_schedule.stop[0].target[0].arn == "arn:aws:scheduler:::aws-sdk:ec2:stopInstances" && alltrue([for s in [aws_scheduler_schedule.start[0], aws_scheduler_schedule.stop[0]] : s.target[0].input == jsonencode({ InstanceIds = ["i-0123456789abcdef0"] })])
+    error_message = "they start and stop this one instance"
+  }
+}
+
+run "an_evening_stop_keeps_its_days" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri"], on = "08:00", off = "20:00" }
+  }
+
+  assert {
+    condition     = aws_scheduler_schedule.stop[0].schedule_expression == "cron(0 20 ? * MON,TUE,WED,THU,FRI *)"
+    error_message = "a stop before midnight runs on the same days as the start"
+  }
+}
+
+run "the_scheduler_may_start_and_stop_only_this_instance" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = jsonencode([for st in jsondecode(aws_iam_role_policy.schedule[0].policy).Statement : [st.Effect, sort(flatten([st.Action])), flatten([st.Resource])]]) == jsonencode([["Allow", ["ec2:StartInstances", "ec2:StopInstances"], [aws_instance.this.arn]]])
+    error_message = "the scheduler's role starts and stops this instance, and nothing else"
+  }
+}
+
+run "rejects_half_hours" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["mon"], on = "08:30", off = "20:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_an_overnight_window" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["mon"], on = "22:00", off = "06:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_fewer_than_4_hours_on" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["mon"], on = "08:00", off = "11:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_an_unknown_day" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["funday"], on = "08:00", off = "20:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_a_repeated_day" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["mon", "mon"], on = "08:00", off = "20:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_a_whole_day_schedule" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = ["mon", "tue", "wed", "thu", "fri"], on = "00:00", off = "24:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "rejects_no_days" {
+  command = plan
+
+  variables {
+    schedule = { timezone = "UTC", days = [], on = "08:00", off = "20:00" }
+  }
+
+  expect_failures = [var.schedule]
+}
+
+run "without_slack_there_is_no_watchdog" {
+  command = plan
+
+  assert {
+    condition     = length(aws_lambda_function.watchdog) == 0 && length(aws_cloudwatch_metric_alarm.system_status) == 0 && length(aws_cloudwatch_metric_alarm.instance_status) == 0 && length(aws_sns_topic.watchdog) == 0 && length(aws_scheduler_schedule.watchdog) == 0
+    error_message = "the watchdog is on only with Slack, which it reports to"
+  }
+}
+
+run "with_slack_the_watchdog_watches" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/monitoring/slack/platform" }, routes = { host = "platform" } }
+  }
+
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.system_status[0].metric_name == "StatusCheckFailed_System" && contains(aws_cloudwatch_metric_alarm.system_status[0].alarm_actions, "arn:aws:automate:us-east-1:ec2:recover") && aws_cloudwatch_metric_alarm.instance_status[0].metric_name == "StatusCheckFailed_Instance" && contains(aws_cloudwatch_metric_alarm.instance_status[0].alarm_actions, "arn:aws:automate:us-east-1:ec2:reboot")
+    error_message = "a failed system check recovers the instance, a failed instance check reboots it"
+  }
+
+  assert {
+    condition     = alltrue([for a in [aws_cloudwatch_metric_alarm.system_status[0], aws_cloudwatch_metric_alarm.instance_status[0]] : a.namespace == "AWS/EC2" && a.dimensions["InstanceId"] == "i-0123456789abcdef0" && contains(a.alarm_actions, aws_sns_topic.watchdog[0].arn) && tolist(a.ok_actions) == tolist([aws_sns_topic.watchdog[0].arn]) && a.treat_missing_data == "notBreaching" && a.period == 60 && a.evaluation_periods == 2])
+    error_message = "both tell the watchdog on alarm and on OK, and a scheduled stop (no data) is silent"
+  }
+
+  assert {
+    condition     = aws_lambda_function.watchdog[0].environment[0].variables["INSTANCE_ID"] == "i-0123456789abcdef0" && aws_lambda_function.watchdog[0].environment[0].variables["WEBHOOK_PARAMETER"] == "/acme/monitoring/slack/platform" && aws_lambda_function.watchdog[0].environment[0].variables["STATE_PARAMETER"] == "/acme-monitoring/node/watchdog-state" && aws_lambda_function.watchdog[0].environment[0].variables["ALARMS"] == "acme-monitoring-system-status,acme-monitoring-instance-status" && aws_lambda_function.watchdog[0].environment[0].variables["SCHEDULE"] == "" && aws_lambda_function.watchdog[0].environment[0].variables["DOMAIN"] == ""
+    error_message = "the watchdog knows its instance, the host channel's webhook, its state and its alarms"
+  }
+
+  assert {
+    condition     = aws_lambda_function.watchdog[0].runtime == "python3.13" && aws_lambda_function.watchdog[0].handler == "watchdog.handler" && aws_scheduler_schedule.watchdog[0].schedule_expression == "rate(5 minutes)" && aws_scheduler_schedule.watchdog[0].target[0].arn == aws_lambda_function.watchdog[0].arn
+    error_message = "it runs every 5 minutes"
+  }
+
+  assert {
+    condition     = aws_sns_topic_subscription.watchdog[0].protocol == "lambda" && aws_sns_topic_subscription.watchdog[0].endpoint == aws_lambda_function.watchdog[0].arn && aws_lambda_permission.watchdog_sns[0].principal == "sns.amazonaws.com"
+    error_message = "and at once when an alarm changes"
+  }
+}
+
+run "the_watchdog_reads_the_schedule_and_the_domain" {
+  command = plan
+
+  variables {
+    slack    = { channels = { platform = "/acme/monitoring/slack/platform" }, routes = { host = "platform" } }
+    domain   = "grafana.example.com"
+    zone_id  = "Z123"
+    schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = jsondecode(aws_lambda_function.watchdog[0].environment[0].variables["SCHEDULE"]) == { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" } && aws_lambda_function.watchdog[0].environment[0].variables["DOMAIN"] == "grafana.example.com"
+    error_message = "the watchdog judges the node by its schedule, and checks Grafana at its domain"
+  }
+}
+
+run "the_watchdog_may_read_only_its_webhook_and_state" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/monitoring/slack/platform" }, routes = { host = "platform" } }
+  }
+
+  assert {
+    condition     = jsonencode([for st in jsondecode(aws_iam_role_policy.watchdog[0].policy).Statement : sort(flatten([st.Resource])) if contains(flatten([st.Action]), "ssm:GetParameter")]) == jsonencode([sort(["arn:aws:ssm:us-east-1:123456789012:parameter/acme/monitoring/slack/platform", "arn:aws:ssm:us-east-1:123456789012:parameter/acme-monitoring/node/watchdog-state"])])
+    error_message = "it reads the host channel's webhook and its own state, nothing else"
+  }
+
+  assert {
+    condition     = jsonencode([for st in jsondecode(aws_iam_role_policy.watchdog[0].policy).Statement : flatten([st.Resource]) if contains(flatten([st.Action]), "ssm:PutParameter")]) == jsonencode([["arn:aws:ssm:us-east-1:123456789012:parameter/acme-monitoring/node/watchdog-state"]])
+    error_message = "it writes only its state"
+  }
 }

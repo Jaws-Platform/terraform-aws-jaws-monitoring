@@ -18,7 +18,8 @@ What it creates:
   CPU credits, an encrypted gp3 root volume, a public IPv4 address, a role
   with Session Manager and nothing else to reach it by;
 - **the data volume** `<name>-data` (encrypted gp3), mounted at `/data` and
-  kept when the instance is replaced, with optional daily snapshots;
+  kept when the instance is replaced, with optional daily snapshots (AWS
+  Backup, vault `<name>-snapshots`);
 - **the security group**: no ingress at all without a `domain`; with one,
   443 and 80 (Let's Encrypt and the redirect) only;
 - **the DNS record** (with a `domain`): the node upserts its own address at
@@ -163,6 +164,60 @@ bundle: the node reads each parameter into Grafana's environment.
   restarts Grafana with the new one.
 - Without `slack`, alerts show in Grafana only, and Grafana's notification
   policy is reset to its default.
+
+### The watchdog
+
+With `slack`, the node is watched from outside, so a dead node still gets
+reported:
+
+- **Two CloudWatch alarms:** a failed system status check makes EC2 recover
+  the instance onto other hardware; a failed instance status check reboots
+  it. A stopped instance sends no data, so a scheduled stop is silent.
+- **The watchdog Lambda** (`<name>-watchdog`) runs every 5 minutes, and at
+  once when an alarm changes, and posts to `host`'s channel:
+
+  | Problem | Severity | When |
+  |---|---|---|
+  | Monitoring node not running | critical | it should be running, and isn't, on two checks in a row; never in the 15 minutes after a scheduled start |
+  | Monitoring node running off-hours | warning | it is running in its off window (a stop that failed is quietly costing money); never in the 15 minutes after a scheduled stop |
+  | Grafana not answering | critical | with a `domain`, `https://<domain>/api/health` failed twice in a row |
+  | EC2 system / instance status check failed | critical | while its alarm is in ALARM |
+
+  Each posts once, again every 4 hours while it lasts, and once when it
+  resolves. Its state is the parameter `/<name>/node/watchdog-state`.
+
+### Off-hours
+
+`schedule` stops the node outside its hours, and starts it again:
+
+```hcl
+schedule = {
+  timezone = "America/Denver"
+  days     = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+  on       = "08:00"
+  off      = "24:00"   # midnight at the end of the day
+}
+```
+
+- **Allowed shapes:** whole hours; `on` before `off` on the same day (no
+  overnight windows); `off` may be `24:00`; at least 4 hours on; one or more
+  unique days. Avoid 01:00 to 03:00, when daylight saving changes: a start
+  or stop there can be skipped or doubled once a year.
+- **How:** two EventBridge Scheduler schedules call `StartInstances` and
+  `StopInstances` in the schedule's time zone. A stop is a normal shutdown.
+- **With Slack,** notifications are muted for the first 15 minutes after each
+  scheduled start, while targets come up and cost-sync catches up. Every area
+  gets its own route then, so nothing falls through to the unmuted root.
+- **Snapshots** run an hour after the stop, in the schedule's time zone (03:00
+  when that falls between 01:00 and 02:59), so they capture disks that were
+  shut down cleanly. Without a schedule they run at `snapshots.time_utc`.
+- **The vault keeps its snapshots:** turning `snapshots` off, or destroying the
+  node, needs its recovery points deleted first (AWS Backup → Vaults →
+  `<name>-snapshots`), so a stray destroy never deletes the backups.
+- **Patching** (the newer-release check) already runs at boot and every 6
+  hours, so it needs nothing from the schedule.
+- Jaws's 08:00 to midnight saves a third of the instance and IPv4 costs; the
+  disks are billed either way.
 
 ### Silences
 
@@ -344,8 +399,8 @@ click filters to one), one row per run, spend by workflow, and efficiency.
 
 | Event | What happens | What's lost |
 |---|---|---|
-| Stop and start | The disks persist; the stack comes back, and DNS follows the new address | Metrics for the time it was off |
-| Reboot or EC2 recovery | Same disks, same instance | Minutes of metrics |
+| Stop and start (or a schedule) | The disks persist; the stack comes back, cost-sync catches up, and DNS follows the new address | Metrics for the time it was off |
+| Reboot or EC2 recovery (the status-check alarms) | Same disks, same instance | Minutes of metrics |
 | Instance replaced | The new instance reattaches the data volume and carries on | Minutes of metrics |
 | Data volume lost | Dashboards and alerts are reprovisioned from the bundle, and cost-sync rebuilds the cost database from `normalized/`; Grafana users other than the admin must be added again | Prometheus history since the last snapshot |
 
@@ -383,12 +438,14 @@ module "monitoring_node" {
 | Name | Version |
 | ---- | ------- |
 | terraform | >= 1.11 |
+| archive | ~> 2.7 |
 | aws | ~> 6.0 |
 
 ## Providers
 
 | Name | Version |
 | ---- | ------- |
+| archive | ~> 2.7 |
 | aws | ~> 6.0 |
 
 ## Modules
@@ -401,14 +458,27 @@ module "monitoring_node" {
 
 | Name | Type |
 | ---- | ---- |
-| [aws_dlm_lifecycle_policy.snapshots](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/dlm_lifecycle_policy) | resource |
+| [aws_backup_plan.snapshots](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/backup_plan) | resource |
+| [aws_backup_selection.snapshots](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/backup_selection) | resource |
+| [aws_backup_vault.snapshots](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/backup_vault) | resource |
+| [aws_cloudwatch_log_group.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_log_group) | resource |
+| [aws_cloudwatch_metric_alarm.instance_status](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_metric_alarm) | resource |
+| [aws_cloudwatch_metric_alarm.system_status](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_metric_alarm) | resource |
 | [aws_ebs_volume.data](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ebs_volume) | resource |
 | [aws_iam_instance_profile.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_instance_profile) | resource |
+| [aws_iam_role.schedule](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
 | [aws_iam_role.snapshots](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
 | [aws_iam_role.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
+| [aws_iam_role.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
+| [aws_iam_role.watchdog_schedule](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
+| [aws_iam_role_policy.schedule](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy) | resource |
 | [aws_iam_role_policy.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy) | resource |
+| [aws_iam_role_policy.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy) | resource |
+| [aws_iam_role_policy.watchdog_schedule](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy) | resource |
 | [aws_iam_role_policy_attachment.snapshots](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
 | [aws_instance.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance) | resource |
+| [aws_lambda_function.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_function) | resource |
+| [aws_lambda_permission.watchdog_sns](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_permission) | resource |
 | [aws_route53_record.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/route53_record) | resource |
 | [aws_s3_bucket.config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket) | resource |
 | [aws_s3_bucket_lifecycle_configuration.config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_lifecycle_configuration) | resource |
@@ -417,13 +487,19 @@ module "monitoring_node" {
 | [aws_s3_bucket_server_side_encryption_configuration.config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_server_side_encryption_configuration) | resource |
 | [aws_s3_bucket_versioning.config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_versioning) | resource |
 | [aws_s3_object.bundle](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_object) | resource |
+| [aws_scheduler_schedule.start](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/scheduler_schedule) | resource |
+| [aws_scheduler_schedule.stop](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/scheduler_schedule) | resource |
+| [aws_scheduler_schedule.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/scheduler_schedule) | resource |
 | [aws_security_group.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group) | resource |
+| [aws_sns_topic.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic) | resource |
+| [aws_sns_topic_subscription.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic_subscription) | resource |
 | [aws_ssm_parameter.config_bundle](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ssm_parameter) | resource |
 | [aws_ssm_parameter.running_config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ssm_parameter) | resource |
 | [aws_ssm_parameter.status](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ssm_parameter) | resource |
 | [aws_volume_attachment.data](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/volume_attachment) | resource |
 | [aws_vpc_security_group_egress_rule.all](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc_security_group_egress_rule) | resource |
 | [aws_vpc_security_group_ingress_rule.web](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc_security_group_ingress_rule) | resource |
+| [archive_file.watchdog](https://registry.terraform.io/providers/hashicorp/archive/latest/docs/data-sources/file) | data source |
 | [aws_ami.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/ami) | data source |
 | [aws_caller_identity.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/caller_identity) | data source |
 | [aws_region.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/region) | data source |
@@ -448,8 +524,9 @@ module "monitoring_node" {
 | instance\_type | The instance type, arm64 (Graviton). A T type runs with standard CPU credits, so a burst never bills extra; watch its credit balance. | `string` | `"t9g.medium"` | no |
 | prometheus\_retention | How long Prometheus keeps metrics, and the size it never grows past (the oldest data is dropped first). size\_gb is at least 1; keep it well under data\_volume\_gb. | <pre>object({<br/>    time    = optional(string, "365d")<br/>    size_gb = optional(number, 12)<br/>  })</pre> | `{}` | no |
 | root\_volume\_gb | Size of the root volume: the OS, the images and a 2 GB swap file. | `number` | `12` | no |
+| schedule | Off-hours: the node runs from on to off on the given days, in timezone (an IANA name), and is stopped otherwise. Whole hours, on before off, off may be 24:00 (midnight at the end of the day), at least 4 hours on, days from mon to sun. Avoid 01:00-03:00, when daylight saving changes. null runs the node all day. | <pre>object({<br/>    timezone = string<br/>    days     = list(string)<br/>    on       = string<br/>    off      = string<br/>  })</pre> | `null` | no |
 | slack | Slack notifications: channels (name => the SSM SecureString parameter holding its incoming-webhook URL) and routes (area => channel; areas are host, pipeline and cost, and host is required, since the root policy uses it). null means no notifications: alerts show in Grafana only. Adding a channel is one webhook parameter and one line here. | <pre>object({<br/>    channels = map(string)<br/>    routes   = map(string)<br/>  })</pre> | `null` | no |
-| snapshots | Daily snapshots of the data volume (Data Lifecycle Manager), at time\_utc, keeping the last `keep`. | <pre>object({<br/>    enabled  = optional(bool, false)<br/>    time_utc = optional(string, "03:00")<br/>    keep     = optional(number, 7)<br/>  })</pre> | `{}` | no |
+| snapshots | Daily snapshots of the data volume (AWS Backup), kept `keep` days. Without a schedule they run at time\_utc (HH:MM); with one, an hour after the stop in the schedule's time zone (03:00 when that falls in 01:00-02:59), so they capture disks shut down cleanly. | <pre>object({<br/>    enabled  = optional(bool, false)<br/>    time_utc = optional(string, "03:00")<br/>    keep     = optional(number, 7)<br/>  })</pre> | `{}` | no |
 | thresholds | Alert thresholds, which also set the dashboard's tile colours and dashed lines. Every attribute is optional and defaults to spec 6.8's numbers. Percentages are of the resource; cpu\_credits\_percent is of the instance type's maximum balance; container\_restarts counts restarts in 15 minutes; the *\_days are days. prometheus\_history\_days warns only while Prometheus is above prometheus\_size\_percent of its size cap, i.e. when the cap is costing history. | <pre>object({<br/>    cpu_percent               = optional(object({ warning = number, critical = number }), { warning = 60, critical = 85 })<br/>    cpu_credits_percent       = optional(object({ warning = number, critical = number }), { warning = 25, critical = 5 })<br/>    memory_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    swap_percent              = optional(object({ warning = number, critical = number }), { warning = 25, critical = 75 })<br/>    disk_percent              = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    disk_full_days            = optional(object({ warning = number, critical = number }), { warning = 7, critical = 2 })<br/>    inodes_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    prometheus_size_percent   = optional(object({ warning = number }), { warning = 85 })<br/>    prometheus_history_days   = optional(object({ warning = number }), { warning = 90 })<br/>    container_restarts        = optional(object({ warning = number, critical = number }), { warning = 1, critical = 3 })<br/>    tls_days                  = optional(object({ warning = number, critical = number }), { warning = 14, critical = 3 })<br/>    os_release_update_days    = optional(object({ warning = number }), { warning = 7 })<br/>    normalizer_hours          = optional(object({ warning = number, critical = number }), { warning = 3, critical = 12 })<br/>    aws_charge_days           = optional(object({ warning = number, critical = number }), { warning = 3, critical = 5 })<br/>    databricks_delivery_hours = optional(object({ warning = number, critical = number }), { warning = 36, critical = 60 })<br/>    cost_sync_hours           = optional(object({ warning = number, critical = number }), { warning = 2, critical = 6 })<br/>    anomaly_ratio             = optional(object({ warning = number, critical = number }), { warning = 2, critical = 4 })<br/>    untagged_daily_usd        = optional(object({ warning = number }), { warning = 0.5 })<br/>  })</pre> | `{}` | no |
 | zone\_id | The Route 53 hosted zone of `domain`. The node may only upsert its own A record there, at every boot. | `string` | `null` | no |
 
@@ -466,4 +543,5 @@ module "monitoring_node" {
 | role\_arn | The node's instance role ARN. |
 | role\_name | The node's instance role. |
 | security\_group\_id | The node's security group. |
+| watchdog\_function\_name | The watchdog Lambda's name, to invoke it by hand (null without Slack). |
 <!-- END_TF_DOCS -->

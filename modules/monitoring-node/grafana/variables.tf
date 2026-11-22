@@ -46,6 +46,17 @@ variable "thresholds" {
   })
 }
 
+variable "schedule" {
+  description = "The node's off-hours schedule, already checked by the monitoring-node module, or null for a node that runs all day. With Slack, notifications are muted for the first 15 minutes after each scheduled start."
+  type = object({
+    timezone = string
+    days     = list(string)
+    on       = string
+    off      = string
+  })
+  default = null
+}
+
 variable "cost" {
   description = "The cost data on the node (its providers), already checked; null for a host-only node."
   type = object({
