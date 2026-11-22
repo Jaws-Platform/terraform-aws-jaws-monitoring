@@ -1,0 +1,40 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: extra
+    folder: Extra
+    interval: 1m
+    rules:
+      - uid: extra-up-critical
+        title: Extra up
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: up
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        labels:
+          area: host
+          severity: critical
+        annotations:
+          summary: A scrape target is down.
+          __dashboardUid__: extra-smoke
+          __panelId__: "1"

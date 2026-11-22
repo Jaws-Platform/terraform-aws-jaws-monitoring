@@ -5,9 +5,11 @@ Part of [`Jaws-Platform/jaws-monitoring/aws`](https://registry.terraform.io/modu
 One small Graviton instance running the monitoring stack in Docker Compose:
 Grafana (on Postgres), Prometheus, node-exporter, cAdvisor and
 postgres-exporter, and, with a `domain`, Caddy for HTTPS and a blackbox probe
-of the public address. Its state lives on a separate data volume, and its
-configuration arrives as a content-addressed bundle, so a dashboard or
-alerting change never replaces the instance.
+of the public address. It watches itself: a host health dashboard, alert
+rules in warning and critical pairs, and Slack notifications routed by area.
+Its state lives on a separate data volume, and its configuration arrives as a
+content-addressed bundle, so a dashboard or alerting change never replaces
+the instance.
 
 What it creates:
 
@@ -87,6 +89,117 @@ aws ssm start-session --target <instance_id> \
   --parameters portNumber=3000,localPortNumber=3000
 ```
 
+## What the node watches
+
+**Monitoring node · Host health** (folder `Monitoring`) shows the last 6
+hours, refreshed every 30 seconds. Tiles across the top: CPU, memory, root
+and data disk, CPU credits (burstable types), targets up and uptime. Then a
+row each for CPU, memory (swap, OOM kills, pressure, memory by container),
+disk (used, days until full, inodes, Prometheus against its cap, history
+kept, Postgres size, I/O), services (scrape targets, container restarts, CPU
+by container, and with a `domain` the TLS certificate and the HTTPS probe)
+and patching (a newer Amazon Linux release, the running release, the last
+boot). Tiles turn yellow and red, and graphs draw dashed lines, at the same
+numbers the alert rules use.
+
+The alert rules (folder `Monitoring`, label `area = host`), with their
+defaults:
+
+| Rule | Warning | Critical | Waits | `thresholds` |
+|---|---|---|---|---|
+| CPU used, 10-minute average | 60 % | 85 % | 2 min | `cpu_percent` |
+| CPU credit balance, of the type's maximum (burstable types) | below 25 % | below 5 % | 15 min | `cpu_credits_percent` |
+| Memory used, 5-minute average | 70 % | 90 % | 2 min | `memory_percent` |
+| Swap used, 15-minute average | 25 % | 75 % | 2 min | `swap_percent` |
+| OOM kill, last 10 minutes | | any | 2 min | |
+| Disk used, each volume | 70 % | 90 % | 5 min | `disk_percent` |
+| Disk full at the last 24 hours' growth | within 7 days | within 2 days | 30 min | `disk_full_days` |
+| Inodes used, each volume | 70 % | 90 % | 5 min | `inodes_percent` |
+| Prometheus cap cutting history: above 85 % of its cap *and* fewer than 90 days kept | fewer than 90 days | | 15 min | `prometheus_history_days`, `prometheus_size_percent` |
+| Scrape target down | | any | 2 min | |
+| Container restarts by Docker, 15 minutes | 1 | 3 | 2 min | `container_restarts` |
+| TLS certificate expiry (with a `domain`) | within 14 days | within 3 days | 2 min | `tls_days` |
+| Grafana rule-evaluation failures, 10 minutes | any, for 12 minutes | | 12 min | |
+| Newer Amazon Linux 2023 release available (reminded once a day) | for 7 days | | 2 min | `os_release_update_days` |
+
+Every rule waits at least 2 minutes, and the rule-evaluation failures rule
+12, longer than its 10-minute window, so the restart of Prometheus or Grafana
+that a config change causes doesn't post. A rule that stops applying (a
+`domain` removed, a type without CPU credits) is deleted from Grafana, not
+left firing with its old numbers.
+
+### Thresholds
+
+Override any of them; the rest keep their defaults:
+
+```hcl
+thresholds = {
+  cpu_percent  = { warning = 70, critical = 90 }
+  disk_percent = { warning = 75, critical = 90 }
+}
+```
+
+### Slack
+
+```hcl
+slack = {
+  channels = {
+    platform = "/acme/monitoring/slack/platform" # SecureString: the incoming-webhook URL
+    costs    = "/acme/monitoring/slack/costs"
+  }
+  routes = { host = "platform", pipeline = "platform", cost = "costs" }
+}
+```
+
+Each channel is a contact point; each area (`host`, `pipeline`, `cost`) goes
+to its channel, and `host` is required: everything else falls back to it.
+Messages are grouped by folder and rule, include resolved ones, and repeat
+every 4 hours while an alert keeps firing (a due AMI bump once a day). The webhook URLs never enter the
+bundle: the node reads each parameter into Grafana's environment.
+
+- **Adding a channel:** create its webhook parameter (SecureString, default
+  `aws/ssm` key), add one line to `channels`, and route an area to it.
+- **Rotating a webhook:** change the parameter; within 5 minutes the node
+  restarts Grafana with the new one.
+- Without `slack`, alerts show in Grafana only, and Grafana's notification
+  policy is reset to its default.
+
+### Silences
+
+Rules are provisioned, so they are read-only in Grafana; to change one for
+good, change its threshold. Silences are allowed: before a planned
+expensive run or a maintenance, silence the rule under **Alerting →
+Silences**, with an end time.
+
+### More dashboards and rules
+
+`extra_dashboards` maps `"<Folder>/<name>.json"` to a dashboard's JSON (it
+needs a `uid` and a `title`); the folder is created in Grafana.
+`extra_alert_rules` maps a name to a Grafana alerting provisioning document
+(YAML), provisioned as `rules-extra-<name>.json`. Every rule needs labels
+`area` (`host`, `pipeline` or `cost`) and `severity` (`warning` or
+`critical`), and links a panel with both `__dashboardUid__` and
+`__panelId__` or neither. A lone `$` only works in annotations and query
+models, where Grafana doesn't expand it; elsewhere write `$$`. Durations are
+Grafana's (`2m`, `1h30m`), a group's `interval` sits on its 10-second grid,
+states are `OK`, `NoData`, `Alerting` or `KeepLast` (`Error` for
+`execErrState`), every query has a `refId`, a `datasourceUid` and a `model`,
+and no uid is one of the module's own host rules (`host-<rule>-<severity>`).
+The plan fails if a
+rule breaks any of this, because Grafana would otherwise exit at startup:
+no dashboards, no alerts. To remove an extra rule, keep its uid
+under `deleteRules` in its document; Grafana keeps a provisioned rule until
+it is told to delete it.
+
+### Testing it
+
+`scripts/check-module.sh modules/monitoring-node` runs the Terraform tests,
+the reconciler and release-check tests, and the Grafana smoke test, which
+needs Docker. The smoke test checks every PromQL query with `promtool`, starts
+the pinned Grafana on what the module renders, and compares Grafana's API
+with the files; then it renders a changed configuration and checks that what
+was removed is gone.
+
 ## Recovery
 
 | Event | What happens | What's lost |
@@ -114,6 +227,11 @@ module "monitoring_node" {
     user_parameter     = "/acme/monitoring/grafana-admin-user"
     password_parameter = "/acme/monitoring/grafana-admin-password"
   }
+
+  slack = {
+    channels = { platform = "/acme/monitoring/slack/platform" }
+    routes   = { host = "platform" }
+  }
 }
 ```
 
@@ -133,7 +251,9 @@ module "monitoring_node" {
 
 ## Modules
 
-No modules.
+| Name | Source | Version |
+| ---- | ------ | ------- |
+| grafana | ./grafana | n/a |
 
 ## Resources
 
@@ -179,11 +299,15 @@ No modules.
 | acme\_email | Optional contact address for Let's Encrypt. | `string` | `null` | no |
 | data\_volume\_gb | Size of the data volume: Prometheus, Postgres, Grafana and Caddy's state, kept when the instance is replaced. | `number` | `30` | no |
 | domain | The name Grafana is served at over HTTPS (Caddy, Let's Encrypt). Null: no ingress at all; reach Grafana through a Session Manager port forward. | `string` | `null` | no |
+| extra\_alert\_rules | More alert rules: a name to a Grafana alerting provisioning document (YAML), provisioned as rules-extra-<name>.json. Every rule needs labels area (host, pipeline or cost) and severity (warning or critical). To remove a rule, keep its uid under deleteRules in the same document. | `map(string)` | `{}` | no |
+| extra\_dashboards | More dashboards to provision: "<Folder>/<name>.json" (the folder is created in Grafana) to the dashboard's JSON, which needs a uid and a title. | `map(string)` | `{}` | no |
 | images | Container images to use instead of the module's digest-pinned defaults, by service name (see the README). | `map(string)` | `{}` | no |
 | instance\_type | The instance type, arm64 (Graviton). A T type runs with standard CPU credits, so a burst never bills extra; watch its credit balance. | `string` | `"t9g.medium"` | no |
-| prometheus\_retention | How long Prometheus keeps metrics, and the size it never grows past (the oldest data is dropped first). Keep size\_gb well under data\_volume\_gb. | <pre>object({<br/>    time    = optional(string, "365d")<br/>    size_gb = optional(number, 12)<br/>  })</pre> | `{}` | no |
+| prometheus\_retention | How long Prometheus keeps metrics, and the size it never grows past (the oldest data is dropped first). size\_gb is at least 1; keep it well under data\_volume\_gb. | <pre>object({<br/>    time    = optional(string, "365d")<br/>    size_gb = optional(number, 12)<br/>  })</pre> | `{}` | no |
 | root\_volume\_gb | Size of the root volume: the OS, the images and a 2 GB swap file. | `number` | `12` | no |
+| slack | Slack notifications: channels (name => the SSM SecureString parameter holding its incoming-webhook URL) and routes (area => channel; areas are host, pipeline and cost, and host is required, since the root policy uses it). null means no notifications: alerts show in Grafana only. Adding a channel is one webhook parameter and one line here. | <pre>object({<br/>    channels = map(string)<br/>    routes   = map(string)<br/>  })</pre> | `null` | no |
 | snapshots | Daily snapshots of the data volume (Data Lifecycle Manager), at time\_utc, keeping the last `keep`. | <pre>object({<br/>    enabled  = optional(bool, false)<br/>    time_utc = optional(string, "03:00")<br/>    keep     = optional(number, 7)<br/>  })</pre> | `{}` | no |
+| thresholds | Alert thresholds, which also set the dashboard's tile colours and dashed lines. Every attribute is optional and defaults to spec 6.8's numbers. Percentages are of the resource; cpu\_credits\_percent is of the instance type's maximum balance; container\_restarts counts restarts in 15 minutes; the *\_days are days. prometheus\_history\_days warns only while Prometheus is above prometheus\_size\_percent of its size cap, i.e. when the cap is costing history. | <pre>object({<br/>    cpu_percent             = optional(object({ warning = number, critical = number }), { warning = 60, critical = 85 })<br/>    cpu_credits_percent     = optional(object({ warning = number, critical = number }), { warning = 25, critical = 5 })<br/>    memory_percent          = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    swap_percent            = optional(object({ warning = number, critical = number }), { warning = 25, critical = 75 })<br/>    disk_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    disk_full_days          = optional(object({ warning = number, critical = number }), { warning = 7, critical = 2 })<br/>    inodes_percent          = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    prometheus_size_percent = optional(object({ warning = number }), { warning = 85 })<br/>    prometheus_history_days = optional(object({ warning = number }), { warning = 90 })<br/>    container_restarts      = optional(object({ warning = number, critical = number }), { warning = 1, critical = 3 })<br/>    tls_days                = optional(object({ warning = number, critical = number }), { warning = 14, critical = 3 })<br/>    os_release_update_days  = optional(object({ warning = number }), { warning = 7 })<br/>  })</pre> | `{}` | no |
 | zone\_id | The Route 53 hosted zone of `domain`. The node may only upsert its own A record there, at every boot. | `string` | `null` | no |
 
 ## Outputs

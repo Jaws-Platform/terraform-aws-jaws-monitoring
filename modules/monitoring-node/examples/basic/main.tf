@@ -1,5 +1,6 @@
-# A monitoring node served at https://grafana.example.com, in a public subnet.
-# Set the two Grafana parameters (SecureString) before the first apply.
+# A monitoring node served at https://grafana.example.com, in a public subnet,
+# posting its alerts to Slack. Set the two Grafana parameters and the webhook
+# parameter (SecureString) before the first apply.
 
 provider "aws" {
   region = "us-east-1"
@@ -19,6 +20,11 @@ module "node" {
   grafana_admin = {
     user_parameter     = "/acme/monitoring/grafana-admin-user"
     password_parameter = "/acme/monitoring/grafana-admin-password"
+  }
+
+  slack = {
+    channels = { platform = "/acme/monitoring/slack/platform" }
+    routes   = { host = "platform" }
   }
 
   snapshots = { enabled = true }

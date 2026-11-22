@@ -4,7 +4,7 @@
 # upsert its own A record.
 
 locals {
-  secret_parameter_names = concat([var.grafana_admin.user_parameter, var.grafana_admin.password_parameter], local.extra_secret_parameters)
+  secret_parameter_names = concat([var.grafana_admin.user_parameter, var.grafana_admin.password_parameter], values(local.slack_channels))
 
   policy_statements = concat(
     [

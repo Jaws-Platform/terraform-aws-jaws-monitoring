@@ -448,3 +448,182 @@ run "mounts_resolve_through_the_stable_current_link" {
     error_message = "no mount is relative to the release folder"
   }
 }
+
+run "the_bundle_carries_grafanas_files" {
+  command = plan
+
+  assert {
+    condition     = alltrue([for path, content in module.grafana.files : try(local.bundle.files[path] == content, false)])
+    error_message = "every file the Grafana config module renders goes into the bundle unchanged"
+  }
+
+  assert {
+    condition     = !contains(keys(local.bundle.files), "grafana/dashboards/.keep")
+    error_message = "the dashboards folder no longer needs a placeholder"
+  }
+}
+
+run "rejects_an_extra_dashboard_outside_a_folder" {
+  command = plan
+
+  variables {
+    extra_dashboards = { "extra.json" = "{\"uid\": \"x\", \"title\": \"X\"}" }
+  }
+
+  expect_failures = [var.extra_dashboards]
+}
+
+run "rejects_an_extra_rules_name_grafana_cant_file" {
+  command = plan
+
+  variables {
+    extra_alert_rules = { "My Rules" = "apiVersion: 1" }
+  }
+
+  expect_failures = [var.extra_alert_rules]
+}
+
+run "the_default_thresholds_are_the_specs" {
+  command = plan
+
+  assert {
+    condition = jsonencode(var.thresholds) == jsonencode({
+      container_restarts      = { critical = 3, warning = 1 }
+      cpu_credits_percent     = { critical = 5, warning = 25 }
+      cpu_percent             = { critical = 85, warning = 60 }
+      disk_full_days          = { critical = 2, warning = 7 }
+      disk_percent            = { critical = 90, warning = 70 }
+      inodes_percent          = { critical = 90, warning = 70 }
+      memory_percent          = { critical = 90, warning = 70 }
+      os_release_update_days  = { warning = 7 }
+      prometheus_history_days = { warning = 90 }
+      prometheus_size_percent = { warning = 85 }
+      swap_percent            = { critical = 75, warning = 25 }
+      tls_days                = { critical = 3, warning = 14 }
+    })
+    error_message = "the thresholds default to spec 6.8's table (and the owner's history rule)"
+  }
+}
+
+run "rejects_thresholds_in_the_wrong_order" {
+  command = plan
+
+  variables {
+    thresholds = { cpu_percent = { warning = 90, critical = 80 } }
+  }
+
+  expect_failures = [var.thresholds]
+}
+
+run "rejects_lower_is_worse_thresholds_in_the_wrong_order" {
+  command = plan
+
+  variables {
+    thresholds = { tls_days = { warning = 3, critical = 14 } }
+  }
+
+  expect_failures = [var.thresholds]
+}
+
+run "rejects_a_fractional_restart_count" {
+  command = plan
+
+  variables {
+    thresholds = { container_restarts = { warning = 1.5, critical = 3 } }
+  }
+
+  expect_failures = [var.thresholds]
+}
+
+run "rejects_a_percentage_over_100" {
+  command = plan
+
+  variables {
+    thresholds = { memory_percent = { warning = 70, critical = 120 } }
+  }
+
+  expect_failures = [var.thresholds]
+}
+
+run "with_slack_the_node_reads_each_webhook" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }, routes = { host = "platform", pipeline = "platform", cost = "costs" } }
+  }
+
+  assert {
+    condition     = contains(one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s.Resource if s.Sid == "ReadTheParameters"]), "arn:aws:ssm:us-east-1:123456789012:parameter/acme/monitoring/slack/platform") && contains(one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s.Resource if s.Sid == "ReadTheParameters"]), "arn:aws:ssm:us-east-1:123456789012:parameter/acme/monitoring/slack/costs")
+    error_message = "the role may read each webhook parameter"
+  }
+
+  assert {
+    condition     = local.bundle.secrets.SLACK_WEBHOOK_COSTS == "/acme/monitoring/slack/costs" && local.bundle.secrets.SLACK_WEBHOOK_PLATFORM == "/acme/monitoring/slack/platform"
+    error_message = "the reconciler reads each webhook into its variable"
+  }
+
+  assert {
+    condition     = yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.SLACK_WEBHOOK_PLATFORM == "$${SLACK_WEBHOOK_PLATFORM:?}" && yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.SLACK_WEBHOOK_COSTS == "$${SLACK_WEBHOOK_COSTS:?}"
+    error_message = "Grafana gets each webhook in its environment, and compose refuses to start it without one"
+  }
+}
+
+run "rejects_a_route_to_an_unknown_channel" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/slack/platform" }, routes = { host = "nope" } }
+  }
+
+  expect_failures = [var.slack]
+}
+
+run "rejects_routes_without_host" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/slack/platform" }, routes = { cost = "platform" } }
+  }
+
+  expect_failures = [var.slack]
+}
+
+run "rejects_an_unknown_area" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/slack/platform" }, routes = { host = "platform", billing = "platform" } }
+  }
+
+  expect_failures = [var.slack]
+}
+
+run "rejects_a_bad_channel_name" {
+  command = plan
+
+  variables {
+    slack = { channels = { Platform_1 = "/acme/slack/platform" }, routes = { host = "Platform_1" } }
+  }
+
+  expect_failures = [var.slack]
+}
+
+run "rejects_a_relative_parameter" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "acme/slack/platform" }, routes = { host = "platform" } }
+  }
+
+  expect_failures = [var.slack]
+}
+
+run "rejects_a_prometheus_size_cap_of_zero" {
+  command = plan
+
+  variables {
+    prometheus_retention = { size_gb = 0 }
+  }
+
+  expect_failures = [var.prometheus_retention]
+}

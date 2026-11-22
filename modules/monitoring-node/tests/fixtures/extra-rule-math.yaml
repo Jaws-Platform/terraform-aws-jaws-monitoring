@@ -1,0 +1,44 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: extra-math
+    folder: Extra
+    interval: 1m
+    rules:
+      - uid: extra-math-warning
+        title: Extra doubled
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: up
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: math
+              expression: $A * 2
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [2]
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        labels:
+          area: host
+          severity: warning
+        annotations:
+          summary: Costs $5 or more when this fires.

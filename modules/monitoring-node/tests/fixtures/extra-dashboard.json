@@ -1,0 +1,1 @@
+{"uid": "extra-smoke", "title": "Extra", "panels": [{"id": 1, "type": "timeseries", "title": "Up", "targets": [{"expr": "up", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}}]}]}
