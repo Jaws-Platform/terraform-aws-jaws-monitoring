@@ -170,11 +170,7 @@ def tasks_sql(join_tags: List[str]) -> str:
     carrying its join tags, in any of FOCUS's key forms), and the cost model's
     runs and campaigns. Runs with no record are built from tagged cost rows."""
     join = ", ".join(f"{lit(tag)}, s.tags->>{lit(tag)}" for tag in join_tags)
-    forms = [
-        "jsonb_build_object(" + ", ".join(f"{lit(tag_forms(t)[i])}, r.join_tags->>{lit(t)}" for t in join_tags) + ")"
-        for i in range(3)
-    ]
-    match = " OR ".join(f"l.tags @> {f}" for f in forms)
+    record_key = " || ';' || ".join(f"{lit(t + '=')} || (s.tags->>{lit(t)})" for t in join_tags)
     first = "array[" + ", ".join(lit(k) for k in tag_forms(join_tags[0])) + "]"
     every = " AND ".join(f"cost.tag(l.tags, {lit(t)}) IS NOT NULL" for t in join_tags)
     key = " || ';' || ".join(f"{lit(t + '=')} || cost.tag(l.tags, {lit(t)})" for t in join_tags)
@@ -190,21 +186,34 @@ SELECT s.run_key, s.tags, jsonb_build_object({join}) AS join_tags, s.project, s.
        s.worst_case_usd, s.ceiling_usd, s.max_hours, s.links, s.attributes, s.at AS started_at,
        coalesce(f.at, w.at) AS ended_at,
        CASE WHEN f.run_key IS NOT NULL THEN f.outcome WHEN w.run_key IS NOT NULL THEN 'swept' END AS outcome,
-       f.exit_code, f.interrupted_at, w.reason AS swept_reason
+       f.exit_code, f.interrupted_at, w.reason AS swept_reason,
+       {record_key} AS cost_key
 FROM s LEFT JOIN f USING (run_key) LEFT JOIN w USING (run_key);
 
--- A run's billed cost: the cost rows whose tags carry its join tags, in any of
--- the three key forms (each an @> test the tags index serves).
+-- The tagged cost rows, once, by the run their join tags name (in any of the
+-- three key forms): one pass through the tags index, however many runs.
+CREATE OR REPLACE VIEW cost.run_lines AS
+SELECT {key} AS run_key, sum(l.billed_cost) AS billed_cost, count(*) AS lines,
+       max(coalesce(l.project, cost.tag(l.tags, 'Project'))) AS project, max(cost.tag(l.tags, 'Campaign')) AS campaign,
+       max(cost.tag(l.tags, 'Workflow')) AS workflow, max(cost.tag(l.tags, 'Profile')) AS profile,
+       max(cost.tag(l.tags, 'Lifecycle')) AS lifecycle,
+       max(cost.tag(l.tags, 'TaskId')) AS task, max(cost.tag(l.tags, 'RunId')) AS run_id,
+       min(l.charge_period_start) AS started_at, max(l.charge_period_end) AS ended_at,
+       sum(l.consumed_quantity) FILTER (WHERE lower(l.consumed_unit) IN ('hrs', 'hours', 'hour')) AS hours
+FROM cost.lines l
+WHERE l.tags ?| {first} AND {every}
+GROUP BY 1;
+
+-- A run's billed cost: its tagged cost rows.
 CREATE OR REPLACE VIEW cost.task_run_costs AS
-SELECT r.run_key, coalesce(sum(l.billed_cost), 0) AS billed_cost, count(l.key) AS lines
-FROM cost.task_runs r LEFT JOIN cost.lines l ON {match}
-GROUP BY r.run_key;
+SELECT r.run_key, coalesce(x.billed_cost, 0) AS billed_cost, coalesce(x.lines, 0) AS lines
+FROM cost.task_runs r LEFT JOIN cost.run_lines x ON x.run_key = r.cost_key;
 
 -- One row per run: recorded runs, and runs known only from tagged cost rows
 -- (before records existed, or when one failed to write). Until a run's last day
 -- is complete, its cost is an estimate: its hours at the hourly price paid.
 CREATE OR REPLACE VIEW cost.runs AS
-WITH recorded AS (
+WITH rl AS (SELECT * FROM cost.run_lines), recorded AS (
   SELECT r.run_key, 'record'::text AS source, r.project, r.campaign, r.kind AS workflow,
          r.attributes->>'profile' AS profile, r.attributes->>'lifecycle' AS lifecycle,
          cost.tag(r.tags, 'TaskId') AS task, cost.tag(r.tags, 'RunId') AS run_id,
@@ -212,27 +221,20 @@ WITH recorded AS (
          r.started_at, r.ended_at, r.ended_at IS NULL AS running,
          (extract(epoch FROM coalesce(r.ended_at, cost.now()) - r.started_at) / 3600)::double precision AS hours,
          coalesce(r.outcome, CASE WHEN r.ended_at IS NULL THEN 'running' END) AS outcome,
-         c.billed_cost, c.lines, r.hourly_usd, r.on_demand_hourly_usd, r.ceiling_usd, r.max_hours,
+         coalesce(x.billed_cost, 0) AS billed_cost, coalesce(x.lines, 0) AS lines,
+         r.hourly_usd, r.on_demand_hourly_usd, r.ceiling_usd, r.max_hours,
          r.links->>'run' AS run_url, r.links->>'pr' AS pr_url, r.links->>'commit' AS commit_url
-  FROM cost.task_runs r JOIN cost.task_run_costs c USING (run_key)
+  FROM cost.task_runs r LEFT JOIN rl x ON x.run_key = r.cost_key
 ), tagged AS (
-  SELECT {key} AS run_key, 'tags'::text AS source,
-         max(coalesce(l.project, cost.tag(l.tags, 'Project'))) AS project, max(cost.tag(l.tags, 'Campaign')) AS campaign,
-         max(cost.tag(l.tags, 'Workflow')) AS workflow, max(cost.tag(l.tags, 'Profile')) AS profile,
-         max(cost.tag(l.tags, 'Lifecycle')) AS lifecycle,
-         max(cost.tag(l.tags, 'TaskId')) AS task, max(cost.tag(l.tags, 'RunId')) AS run_id,
+  SELECT x.run_key, 'tags'::text AS source, x.project, x.campaign, x.workflow, x.profile, x.lifecycle, x.task, x.run_id,
          NULL::text AS instance_type, NULL::integer AS accelerators, NULL::text AS market, NULL::text AS zone,
-         NULL::text AS instance_id, min(l.charge_period_start) AS started_at, max(l.charge_period_end) AS ended_at,
-         false AS running,
-         sum(l.consumed_quantity) FILTER (WHERE lower(l.consumed_unit) IN ('hrs', 'hours', 'hour')) AS hours,
-         NULL::text AS outcome, sum(l.billed_cost) AS billed_cost, count(*) AS lines,
+         NULL::text AS instance_id, x.started_at, x.ended_at, false AS running, x.hours,
+         NULL::text AS outcome, x.billed_cost, x.lines,
          NULL::double precision AS hourly_usd, NULL::double precision AS on_demand_hourly_usd,
          NULL::double precision AS ceiling_usd, NULL::double precision AS max_hours,
          NULL::text AS run_url, NULL::text AS pr_url, NULL::text AS commit_url
-  FROM cost.lines l
-  WHERE l.tags ?| {first} AND {every}
-    AND NOT EXISTS (SELECT 1 FROM cost.task_runs t WHERE t.run_key = {key})
-  GROUP BY 1
+  FROM rl x
+  WHERE NOT EXISTS (SELECT 1 FROM cost.task_runs t WHERE t.cost_key = x.run_key)
 ), e AS (
   SELECT x.*, (x.hourly_usd IS NOT NULL AND (x.running OR x.lines = 0
                OR (x.ended_at AT TIME ZONE 'UTC')::date > cost.last_complete())) AS estimated

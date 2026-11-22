@@ -324,4 +324,31 @@ expect campaigns "net-v12" "$(at "$now" "select concat_ws(' ', project, runs, pa
 expect campaigns "net-v11" "$(at "$now" "select coalesce(cost_per_passed_run::text, 'null') from cost.campaigns where campaign = 'net-v11'")" null
 echo "cost sync (postgres): campaigns_add_up_their_runs"
 
+# the_task_views_scan_cost_lines_once: 300 more recorded runs, each with a cost
+# row. Every scan of cost.lines behind cost.runs runs once, not once per run.
+docker exec -i "$container" psql -U monitoring -d cost -X -q -v ON_ERROR_STOP=1 > /dev/null << 'SQL'
+INSERT INTO cost.run_events (key, period, run_key, tags, event, at, project, kind, hourly_usd)
+SELECT 'test/scale', '2026-11', 'RunId=' || n || '-1;TaskId=scale', jsonb_build_object('RunId', n || '-1', 'TaskId', 'scale'),
+       'started', '2026-11-12T00:00:00Z', 'scale', 'train', 1.0
+FROM generate_series(1000, 1299) AS n;
+INSERT INTO cost.lines (key, provider, period, provider_name, sub_account_id, charge_period_start, charge_category,
+                        service_name, billed_cost, tags)
+SELECT 'test/scale', 'aws', '2026-11', 'AWS', '570327089884', '2026-11-12T00:00:00Z', 'Usage', 'Amazon Elastic Compute Cloud',
+       1, jsonb_build_object('RunId', n || '-1', 'TaskId', 'scale')
+FROM generate_series(1000, 1299) AS n;
+ANALYZE cost.lines;
+ANALYZE cost.run_events;
+SQL
+loops="$(at "$now" "CREATE FUNCTION pg_temp.lines_loops(q text) RETURNS bigint LANGUAGE plpgsql AS \$\$
+DECLARE plan jsonb;
+BEGIN
+  EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || q INTO plan;
+  RETURN (SELECT max((n->>'Actual Loops')::bigint) FROM jsonb_path_query(plan, 'strict \$.**') AS n
+          WHERE jsonb_typeof(n) = 'object' AND n->>'Relation Name' = 'lines');
+END \$\$;
+SELECT pg_temp.lines_loops('SELECT * FROM cost.runs');")"
+[ "$loops" = 1 ] || fail "the_task_views_scan_cost_lines_once: cost.lines is scanned $loops times"
+expect scale "runs" "$(at "$now" "select count(*) from cost.runs where project = 'scale' and billed_cost = 1")" 300
+echo "cost sync (postgres): the_task_views_scan_cost_lines_once"
+
 echo "cost sync (postgres): OK"
