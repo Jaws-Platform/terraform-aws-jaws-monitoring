@@ -11,3 +11,5 @@
 #                                payer, for organization-wide data)
 #   modules/billing-normalizer   the hourly Lambda that rebuilds each changed
 #                                billing period as FOCUS-aligned Parquet
+#   modules/monitoring-node      the instance running Grafana, Prometheus and
+#                                the exporters, configured by a bundle
