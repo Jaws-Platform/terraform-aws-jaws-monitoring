@@ -1232,8 +1232,36 @@ run "every_cost_panel_reads_the_cost_database" {
   }
 
   assert {
-    condition     = alltrue(flatten([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : [for t in try(p.targets, []) : t.datasource.uid == "cost" && strcontains(t.rawSql, "cost.")]]))
-    error_message = "every query reads the cost database's own objects"
+    condition     = alltrue(flatten([for path, body in output.files : [for p in jsondecode(body).panels : [for t in try(p.targets, []) : t.datasource.uid == "cost" && strcontains(t.rawSql, "cost.")]] if startswith(path, "grafana/dashboards/Cost/")]))
+    error_message = "every query of every cost dashboard reads the cost database's own objects"
+  }
+}
+
+run "every_cost_filter_guards_all" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = alltrue(flatten([for path, body in output.files : [for v in jsondecode(body).templating.list : !v.multi || try(v.allValue, "") == "'__all'"] if startswith(path, "grafana/dashboards/Cost/")]))
+    error_message = "every multi-value cost filter says All as '__all', so an empty one can't become IN ()"
+  }
+
+  assert {
+    condition = alltrue(flatten([for path, body in output.files : [
+      for p in jsondecode(body).panels : [
+        for t in try(p.targets, []) : [
+          for v in jsondecode(body).templating.list : !v.multi || !strcontains(t.rawSql, format("$%s", v.name)) || strcontains(t.rawSql, format("'__all' IN ($%s)", v.name))
+        ]
+      ]
+    ] if startswith(path, "grafana/dashboards/Cost/")]))
+    error_message = "every query that filters on a multi-value variable lets '__all' through"
   }
 }
 

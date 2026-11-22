@@ -146,18 +146,22 @@ def cost_problems(url: str, auth: str) -> list:
 def cost_query_problems(release: Path, url: str, auth: str) -> list:
     """Every SQL panel of the cost dashboards runs against the real cost database.
 
-    Grafana expands dashboard variables in the browser, so each `($name)` is
-    replaced by the variable's own query, which is what "All" selects."""
+    Grafana expands dashboard variables in the browser. A variable with an
+    allValue becomes that value, which is what "All" sends; any other becomes
+    its own query, `($name)` -> `(<query>)`, a value it can take."""
     found = []
     for path, board in dashboards(release).items():
-        variables = {v["name"]: v["query"] for v in board.get("templating", {}).get("list", [])}
+        variables = board.get("templating", {}).get("list", [])
         for p in panels(board):
             for t in p.get("targets", []):
                 if (t.get("datasource") or {}).get("uid") != "cost":
                     continue
                 sql = t["rawSql"]
-                for name, query in variables.items():
-                    sql = sql.replace(f"(${name})", f"({query})")
+                for v in variables:
+                    if v.get("allValue") is not None:
+                        sql = re.sub(r"\$" + re.escape(v["name"]) + r"\b", lambda _: v["allValue"], sql)
+                    else:
+                        sql = sql.replace(f"(${v['name']})", f"({v['query']})")
                 body = json.dumps({"from": "now-90d", "to": "now", "queries": [{
                     "refId": "A", "datasource": {"uid": "cost", "type": "grafana-postgresql-datasource"},
                     "rawSql": sql, "format": t.get("format", "table")}]}).encode()
