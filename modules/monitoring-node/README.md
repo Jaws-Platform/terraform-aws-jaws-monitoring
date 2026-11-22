@@ -259,7 +259,7 @@ Pipeline row):
 | AWS charges stale (newest charge loaded) | 3 days | 5 days | `aws_charge_days` |
 | Databricks delivery stale | 36 h | 60 h | `databricks_delivery_hours` |
 | Task run possibly leaked (no end, an hour past its max hours) | | any | |
-| Task run over its ceiling (billed cost) | | any | |
+| Task run over its ceiling (billed cost; runs from the last 7 days, posted once a week) | | any | |
 
 Until any data has arrived, each clock starts when the node first ran
 cost-sync. A new node isn't alarmed in its first hours, but is once data

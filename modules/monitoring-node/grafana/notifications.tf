@@ -73,6 +73,12 @@ locals {
             object_matchers = [["alertname", "=", local.rule_common["host-os-release-warning"].title]]
             repeat_interval = "24h"
           }],
+          # A run over its ceiling stays over (its bill only grows): say it once.
+          [for r in [{
+            receiver        = "slack-${lookup(local.slack_routes, "pipeline", lookup(local.slack_routes, "host", ""))}"
+            object_matchers = [["alertname", "=", "${one([for s in local.pipeline_rule_specs : s.title if s.key == "task-run-over-ceiling"])} — critical"]]
+            repeat_interval = "168h"
+          }] : r if local.cost_on],
           [
             for area in sort(keys(local.slack_routes)) : {
               receiver        = "slack-${local.slack_routes[area]}"

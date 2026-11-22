@@ -46,6 +46,8 @@ for _ in $(seq 1 60); do
 done
 docker exec "$container" pg_isready -U monitoring -d grafana > /dev/null 2>&1 || fail "postgres didn't start"
 
+# The fixtures' runs are from 2026-11-20: judge them as of the next day.
+export MONITORING_NOW=1795262400 # 2026-11-21T12:00:00Z
 export MONITORING_ROOT="$root" MONITORING_TEXTFILE_DIR="$textfile" FAKE_S3_ROOT="$scratch/s3"
 export MONITORING_PSQL="docker exec -i $container psql -U monitoring -v ON_ERROR_STOP=1"
 export PATH="$scratch/bin:$PATH"
@@ -109,6 +111,13 @@ grep -q '^monitoring_task_run_overdue_hours{.*run_key="RunId=r2;TaskId=t2"' "$te
 expect limits "runs over ceiling" "$(grep -c '^monitoring_task_run_over_ceiling_usd{' "$textfile/cost_sync.prom")" 1
 expect limits "r1 over its ceiling" "$(metric 'monitoring_task_run_over_ceiling_usd{project="braveheart-trainer",run_key="RunId=r1;TaskId=t1"}')" 2.5
 echo "cost sync (postgres): only_runs_past_their_limits_are_reported"
+
+# an_old_run_over_its_ceiling_is_no_longer_reported
+MONITORING_NOW=1797336000 sync || fail "an_old_run_over_its_ceiling_is_no_longer_reported: the run failed" # 2026-12-15
+expect old_runs "runs over ceiling" "$(grep -c '^monitoring_task_run_over_ceiling_usd{' "$textfile/cost_sync.prom" || true)" 0
+expect old_runs "overdue runs" "$(grep -c '^monitoring_task_run_overdue_hours{' "$textfile/cost_sync.prom")" 1
+sync || fail "an_old_run_over_its_ceiling_is_no_longer_reported: the run failed"
+echo "cost sync (postgres): an_old_run_over_its_ceiling_is_no_longer_reported"
 
 # grafanas_reader_reads_and_nothing_else
 reader() { docker exec -i -e "PGPASSWORD=$reader_password" "$container" psql -h 127.0.0.1 -U cost_reader -d cost -X -At -c "$1"; }

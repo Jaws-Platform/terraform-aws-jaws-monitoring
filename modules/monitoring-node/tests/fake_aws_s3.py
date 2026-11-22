@@ -6,7 +6,8 @@
 
 FAKE_S3_ROOT/<bucket>/<key> is an object. Its ETag is the quoted md5 of its
 bytes (as S3's for a single-part put), LastModified its file mtime. A missing
-key fails as S3 does (404). FAKE_AWS_FAIL=1 fails every call.
+key fails as S3 does (404), or with FAKE_S3_MISSING=403 as S3 does for a role
+whose ListBucket is limited to a prefix. FAKE_AWS_FAIL=1 fails every call.
 """
 
 import hashlib
@@ -50,6 +51,8 @@ def main(argv: list) -> None:
         bucket, _, key = source[len("s3://"):].partition("/")
         path = root / bucket / key
         if not path.is_file():
+            if os.environ.get("FAKE_S3_MISSING") == "403":
+                fail("fatal error: An error occurred (403) when calling the HeadObject operation: Forbidden")
             fail("fatal error: An error occurred (404) when calling the HeadObject operation: Not Found")
         if dest == "-":
             sys.stdout.buffer.write(path.read_bytes())

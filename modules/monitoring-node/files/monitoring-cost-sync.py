@@ -160,6 +160,9 @@ def schema_sql(join_tags: List[str]) -> str:
     )
 
 
+# __NOW__ is now(), or MONITORING_NOW (Unix seconds) for tests. Only runs from
+# the last 7 days can be over their ceiling: the bill arrives a day or two after
+# a run and never shrinks, so an older one would be reported forever.
 MEASURE_SQL = """SELECT json_build_object(
   'outputs', (SELECT count(*) FROM cost.loads),
   'newest_charge', (SELECT coalesce(json_object_agg(provider, t), '{}') FROM
@@ -170,14 +173,15 @@ MEASURE_SQL = """SELECT json_build_object(
   'normalizer_latest', (SELECT json_build_object('status', status, 'errors', errors, 'warnings', warnings)
       FROM cost.normalizer_runs ORDER BY started_at DESC LIMIT 1),
   'overdue', (SELECT coalesce(json_agg(json_build_object('project', project, 'run_key', run_key,
-        'instance_id', coalesce(instance_id, ''), 'hours', extract(epoch FROM now() - started_at) / 3600 - (max_hours + 1))
+        'instance_id', coalesce(instance_id, ''), 'hours', extract(epoch FROM __NOW__ - started_at) / 3600 - (max_hours + 1))
         ORDER BY run_key), '[]')
       FROM cost.task_runs WHERE ended_at IS NULL AND max_hours IS NOT NULL
-        AND now() > started_at + make_interval(secs => (max_hours + 1) * 3600)),
+        AND __NOW__ > started_at + make_interval(secs => (max_hours + 1) * 3600)),
   'over_ceiling', (SELECT coalesce(json_agg(json_build_object('project', r.project, 'run_key', r.run_key,
         'usd', c.billed_cost - r.ceiling_usd) ORDER BY r.run_key), '[]')
       FROM cost.task_runs r JOIN cost.task_run_costs c USING (run_key)
-      WHERE r.ceiling_usd IS NOT NULL AND c.billed_cost > r.ceiling_usd)
+      WHERE r.ceiling_usd IS NOT NULL AND c.billed_cost > r.ceiling_usd
+        AND r.started_at > __NOW__ - interval '7 days')
 );
 """
 
@@ -313,6 +317,12 @@ class CostSync:
             "COMMIT;\n"))
 
     def record_normalizer(self, config: dict) -> None:
+        # List it first: the role may list only under the prefix, so S3 answers
+        # a GET of a missing key with 403, not 404.
+        key = f"{config['prefix']}/_runs/latest.json"
+        listing = self.aws("s3api", "list-objects-v2", "--bucket", config["bucket"], "--prefix", key, "--output", "json")
+        if not any(item.get("Key") == key for item in (json.loads(listing) if listing.strip() else {}).get("Contents") or []):
+            return  # the normalizer hasn't run yet
         try:
             text = self.aws("s3", "cp", f"s3://{config['bucket']}/{config['prefix']}/_runs/latest.json", "-", "--only-show-errors")
         except RuntimeError as error:
@@ -328,7 +338,9 @@ class CostSync:
             "  errors = EXCLUDED.errors, warnings = EXCLUDED.warnings, record = EXCLUDED.record;\n"))
 
     def measure(self) -> dict:
-        return json.loads(self.psql("cost", MEASURE_SQL, query=True))
+        at = os.environ.get("MONITORING_NOW")
+        now = f"to_timestamp({int(at)})" if at else "now()"
+        return json.loads(self.psql("cost", MEASURE_SQL.replace("__NOW__", now), query=True))
 
     # ------------------------------------------------------------- metrics
     def write_metrics(self, state: dict, config: dict, values: Optional[dict], ok: bool) -> None:

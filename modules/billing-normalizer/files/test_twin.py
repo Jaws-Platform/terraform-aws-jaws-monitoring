@@ -1,6 +1,7 @@
 import csv
 import gzip
 import io
+import tracemalloc
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -103,6 +104,17 @@ class TwinTest(unittest.TestCase):
 
     def test_the_bytes_are_reproducible(self):
         self.assertEqual(write_twin(RUNS_ROWS, RUNS), write_twin(RUNS_ROWS, RUNS))
+
+    def test_writing_a_twin_keeps_memory_flat(self):
+        rows = FOCUS_AWS_ROWS * 25000  # 50,000 rows (two shared dicts): about 30 MB of CSV text
+        tracemalloc.start()
+        try:
+            write_twin(rows, FOCUS)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        # The Lambda holds the rows and the Parquet already; the twin must not add a copy of itself.
+        self.assertLess(peak, 16 * 1024 * 1024)
 
     def test_every_row_has_every_column(self):
         rows = list(csv.reader(io.StringIO(text(write_twin(RUNS_ROWS, RUNS)))))

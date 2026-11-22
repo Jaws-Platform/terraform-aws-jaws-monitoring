@@ -180,6 +180,15 @@ class CostSyncFailureTest(unittest.TestCase):
         self.assertEqual(self.node.metrics()["monitoring_cost_sync_success"], "0")
         self.assertEqual(self.node.metrics()["monitoring_cost_sync_last_success_seconds"], str(before))
 
+    def test_before_the_normalizers_first_run_it_still_succeeds(self):
+        # The role may list only under the prefix, so S3 hides a missing key behind 403.
+        self.node.put_twin(RUNS_KEY, "runs.csv")
+
+        result = self.node.run(FAKE_S3_MISSING="403")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.node.metrics()["monitoring_cost_sync_success"], "1")
+
     def test_the_reader_password_never_reaches_argv(self):
         self.good_run()
 

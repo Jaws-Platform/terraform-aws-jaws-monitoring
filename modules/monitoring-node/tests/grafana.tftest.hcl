@@ -1167,3 +1167,21 @@ run "rejects_a_uid_the_pipeline_rules_own" {
 
   expect_failures = [output.files]
 }
+
+run "an_over_ceiling_run_posts_once_a_week" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost  = { providers = ["aws"] }
+    slack = { channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }, routes = { host = "platform", pipeline = "costs" } }
+  }
+
+  assert {
+    condition     = length([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : r if jsonencode(r.object_matchers) == jsonencode([["alertname", "=", "Task run over its ceiling — critical"]]) && r.receiver == "slack-costs" && r.repeat_interval == "168h"]) == 1
+    error_message = "an over-ceiling run is reported once, to the pipeline channel, not every 4 hours while its bill stands"
+  }
+}

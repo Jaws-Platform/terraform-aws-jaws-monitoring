@@ -39,10 +39,18 @@ def _cell(value, kind: pa.DataType):
 
 
 def write_twin(rows: Sequence[Mapping], schema: pa.Schema) -> bytes:
-    """The rows as csv-twin-1: gzip bytes, one column per schema field, in order."""
-    text = io.StringIO()
-    writer = csv.writer(text, quoting=csv.QUOTE_NOTNULL, lineterminator="\n")
-    writer.writerow(schema.names)
-    for row in rows:
-        writer.writerow([_cell(row.get(field.name), field.type) for field in schema])
-    return gzip.compress(text.getvalue().encode("utf-8"), mtime=0)
+    """The rows as csv-twin-1: gzip bytes, one column per schema field, in order.
+
+    Rows are streamed through gzip, so only the compressed twin is ever held:
+    the Lambda already holds the rows and the Parquet.
+    """
+    out = io.BytesIO()
+    with gzip.GzipFile(fileobj=out, mode="wb", mtime=0) as compressed:
+        text = io.TextIOWrapper(compressed, encoding="utf-8", newline="")
+        writer = csv.writer(text, quoting=csv.QUOTE_NOTNULL, lineterminator="\n")
+        writer.writerow(schema.names)
+        for row in rows:
+            writer.writerow([_cell(row.get(field.name), field.type) for field in schema])
+        text.flush()
+        text.detach()
+    return out.getvalue()
