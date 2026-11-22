@@ -17,14 +17,16 @@ locals {
   # Board => [{ name, label, query, column, multi = true }]: column is the SQL
   # expression the variable filters.
   cost_board_vars = {
-    overview = local.overview_vars
-    project  = local.project_vars
+    overview   = local.overview_vars
+    project    = local.project_vars
+    databricks = local.databricks_vars
   }
 
   # Board => { uid, title, time, stats, series, bars, tables, pies, rows }.
   cost_boards = {
-    overview = local.overview_board
-    project  = local.project_board
+    overview   = local.overview_board
+    project    = local.project_board
+    databricks = local.databricks_board
   }
 
   cost_filter = {

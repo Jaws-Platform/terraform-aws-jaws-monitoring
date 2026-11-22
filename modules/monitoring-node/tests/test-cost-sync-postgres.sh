@@ -268,4 +268,25 @@ sync || fail "the cost views: the run failed"
 expect component "web-app on Nov 20" "$(at "$now" "select string_agg(component || '=' || billed_cost, ',' order by component) from cost.daily where project = 'web-app' and day = '2026-11-20'")" "api=1,site=2"
 echo "cost sync (postgres): the_daily_view_carries_the_component"
 
+# databricks_daily_names_products_and_counts_dbus
+expect databricks "ws-1" "$(at "$now" "select string_agg(concat_ws(' ', product, serverless, quantity, list_cost), ',' order by product) from cost.databricks_daily where workspace_id = 'ws-1'")" "ALL_PURPOSE f 4 2.2,JOBS t 10 3.5"
+echo "cost sync (postgres): databricks_daily_names_products_and_counts_dbus"
+
+# the_all_in_adds_the_workspaces_aws_rows_in_any_tag_key_form
+expect all_in "Nov 20" "$(at "$now" "select concat_ws(' ', round(databricks_cost::numeric, 2), round(aws_cost::numeric, 2), round(all_in_cost::numeric, 2)) from cost.databricks_all_in where workspace = 'braveheart-prod' and day = '2026-11-20'")" "5.70 1.50 7.20"
+expect all_in "Nov 19" "$(at "$now" "select concat_ws(' ', round(databricks_cost::numeric, 2), round(aws_cost::numeric, 2), round(all_in_cost::numeric, 2)) from cost.databricks_all_in where workspace = 'braveheart-prod' and day = '2026-11-19'")" "0.00 0.10 0.10"
+echo "cost sync (postgres): the_all_in_adds_the_workspaces_aws_rows_in_any_tag_key_form"
+
+# a_workspace_without_a_name_is_shown_by_its_id
+expect all_in_id "ws-2" "$(at "$now" "select concat_ws(' ', round(databricks_cost::numeric, 2), round(aws_cost::numeric, 2), round(all_in_cost::numeric, 2)) from cost.databricks_all_in where workspace = 'ws-2' and day = '2026-11-20'")" "1.00 0.00 1.00"
+echo "cost sync (postgres): a_workspace_without_a_name_is_shown_by_its_id"
+
+# the_workspace_tag_is_the_callers
+views_config DatabricksWorkspace
+sync || fail "the_workspace_tag_is_the_callers: the run failed"
+expect workspace_tag "AWS on Nov 20" "$(at "$now" "select round(aws_cost::numeric, 2) from cost.databricks_all_in where workspace = 'braveheart-prod' and day = '2026-11-20'")" 0.00
+views_config
+sync || fail "the_workspace_tag_is_the_callers: the run back failed"
+echo "cost sync (postgres): the_workspace_tag_is_the_callers"
+
 echo "cost sync (postgres): OK"

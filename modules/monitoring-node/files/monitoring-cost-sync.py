@@ -129,7 +129,43 @@ def write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def schema_sql(join_tags: List[str]) -> str:
+def tag_forms(key: str) -> List[str]:
+    """The three ways FOCUS may write a user-defined tag's key (AWS doesn't
+    document which), in the normalizer's order; cost.tag() reads the same."""
+    return [key, "user:" + key, "user_" + key.lower()]
+
+
+def databricks_sql(workspace_tag: str) -> str:
+    """Databricks per day at list price, and each workspace's all-in cost: its
+    Databricks list cost plus the AWS rows whose workspace tag names it."""
+    keys = "array[" + ", ".join(lit(k) for k in tag_forms(workspace_tag)) + "]"
+    return f"""
+CREATE OR REPLACE VIEW cost.databricks_daily AS
+SELECT day, sub_account_id AS workspace_id, coalesce(sub_account_name, sub_account_id) AS workspace,
+       regexp_replace(coalesce(service_name, ''), '^Databricks ', '') AS product, sku_id AS sku,
+       coalesce(serverless, false) AS serverless, project, consumed_unit AS unit,
+       sum(consumed_quantity) AS quantity, sum(billed_cost) AS list_cost
+FROM cost.lines
+WHERE provider = 'databricks' AND day <= cost.today()
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
+
+-- The AWS side is found through the tags index (?| over the key's three forms):
+-- classic clusters' EC2 and EBS, and anything else tagged with the workspace.
+CREATE OR REPLACE VIEW cost.databricks_all_in AS
+WITH d AS (
+  SELECT day, coalesce(sub_account_name, sub_account_id) AS workspace, billed_cost AS dbx, 0::double precision AS aws
+  FROM cost.lines WHERE provider = 'databricks' AND day <= cost.today()
+  UNION ALL
+  SELECT day, cost.tag(tags, {lit(workspace_tag)}), 0, billed_cost
+  FROM cost.lines WHERE provider = 'aws' AND tags ?| {keys} AND day <= cost.today()
+)
+SELECT day, workspace, sum(dbx) AS databricks_cost, sum(aws) AS aws_cost, sum(dbx) + sum(aws) AS all_in_cost
+FROM d WHERE workspace IS NOT NULL
+GROUP BY day, workspace;
+"""
+
+
+def schema_sql(join_tags: List[str], workspace_tag: str = "Workspace") -> str:
     def table(name: str, leading: List[str], columns, trailing: tuple = ()) -> str:
         return (f"CREATE TABLE IF NOT EXISTS cost.{name} "
                 f"({', '.join(leading + [f'{c} {t}' for _, c, t in columns] + list(trailing))});\n")
@@ -168,6 +204,7 @@ def schema_sql(join_tags: List[str]) -> str:
         "SELECT r.run_key, coalesce(sum(l.billed_cost), 0) AS billed_cost, count(l.key) AS lines\n"
         "FROM cost.task_runs r LEFT JOIN cost.lines l ON l.tags @> r.join_tags GROUP BY r.run_key;\n"
         + MODEL_SQL
+        + databricks_sql(workspace_tag)
         + "GRANT CONNECT ON DATABASE cost TO cost_reader;\n"
         "GRANT USAGE ON SCHEMA cost TO cost_reader;\n"
         "GRANT SELECT ON ALL TABLES IN SCHEMA cost TO cost_reader;\n"
@@ -185,6 +222,9 @@ def schema_sql(join_tags: List[str]) -> str:
 MODEL_SQL = """
 CREATE OR REPLACE FUNCTION cost.now() RETURNS timestamptz LANGUAGE sql STABLE AS
 $$ SELECT coalesce(nullif(current_setting('cost.now', true), '')::timestamptz, now()) $$;
+-- A tag's value, whichever of FOCUS's three key forms it was written in.
+CREATE OR REPLACE FUNCTION cost.tag(tags jsonb, key text) RETURNS text LANGUAGE sql IMMUTABLE AS
+$$ SELECT coalesce(tags->>key, tags->>('user:' || key), tags->>('user_' || lower(key))) $$;
 -- Stable, so a view's window on day is pushed down to the lines_day index.
 CREATE OR REPLACE FUNCTION cost.today() RETURNS date LANGUAGE sql STABLE AS
 $$ SELECT (cost.now() AT TIME ZONE 'UTC')::date $$;
@@ -396,7 +436,8 @@ class CostSync:
             print(f"monitoring-cost-sync: schema {version} -> {COST_SCHEMA_VERSION}, rebuilding", file=sys.stderr)
             rebuild = ("DROP SCHEMA cost CASCADE;\nCREATE SCHEMA cost;\n"
                        "CREATE TABLE cost.meta (name text PRIMARY KEY, value text NOT NULL);\n")
-        self.psql("cost", "BEGIN;\n" + rebuild + schema_sql(config["run_join_tags"]) + "COMMIT;\n")
+        self.psql("cost", "BEGIN;\n" + rebuild + schema_sql(config["run_join_tags"], config.get("databricks_workspace_tag") or "Workspace")
+                  + "COMMIT;\n")
 
     def write_budgets(self, config: dict) -> None:
         """Rewrite cost.budgets from the bundle: what isn't there any more goes."""

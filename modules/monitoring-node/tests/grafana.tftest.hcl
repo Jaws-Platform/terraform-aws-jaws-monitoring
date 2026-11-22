@@ -1507,3 +1507,86 @@ run "the_project_board_needs_cost" {
     error_message = "a host-only node has no project dashboard"
   }
 }
+
+run "the_databricks_board_follows_the_house_style" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).uid == "cost-databricks" && jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).title == "Cost · Databricks" && jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).editable == false && jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).refresh == "30s" && jsonencode(jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).time) == jsonencode({ from = "now-90d", to = "now" }) && contains(jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).tags, "cost")
+    error_message = "read-only, tagged cost, over the last 90 days, refreshed every 30 seconds"
+  }
+
+  assert {
+    condition     = jsonencode([for v in jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).templating.list : v.name]) == jsonencode(["workspace", "product"]) && alltrue([for v in jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).templating.list : v.datasource.uid == "cost" && v.multi])
+    error_message = "two multi-value filters, each from the cost database"
+  }
+
+  assert {
+    condition     = length(distinct([for p in jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).panels : p.id])) == length(jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).panels) && alltrue([for i, p in jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).panels : p.type != "row" || try(jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).panels[i + 1].type, "") == "text"]) && alltrue([for p in jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).panels : contains(["row", "text"], p.type) || trimspace(try(p.description, "")) != ""])
+    error_message = "unique ids, every row opens with text, every panel has a description"
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).panels : p if contains([12, 22, 32, 42], p.id)]) == 4
+    error_message = "its main panels are there"
+  }
+}
+
+run "the_databricks_board_says_list_price" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = alltrue([for i in [1, 12] : strcontains(lower("${one([for p in jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).panels : p if p.id == i]).title} ${one([for p in jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).panels : p if p.id == i]).description}"), "list price")])
+    error_message = "Databricks amounts say they are list price"
+  }
+}
+
+run "the_all_in_names_its_tag" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"], databricks_workspace_tag = "DbxWs" }
+  }
+
+  assert {
+    condition     = strcontains(one([for p in jsondecode(output.files["grafana/dashboards/Cost/databricks.json"]).panels : p if p.id == 42]).description, "DbxWs")
+    error_message = "the all-in says which tag ties AWS rows to a workspace"
+  }
+}
+
+run "the_databricks_board_needs_databricks" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws"] }
+  }
+
+  assert {
+    condition     = !contains(keys(output.files), "grafana/dashboards/Cost/databricks.json")
+    error_message = "with no Databricks data expected, there is no Databricks dashboard"
+  }
+}

@@ -10,7 +10,7 @@ module "grafana" {
   domain            = var.domain
   thresholds        = var.thresholds
   slack             = var.slack
-  cost              = var.cost == null ? null : { providers = var.cost.providers, anomaly_floor_usd = var.cost.anomaly_floor_usd }
+  cost              = var.cost == null ? null : { providers = var.cost.providers, anomaly_floor_usd = var.cost.anomaly_floor_usd, databricks_workspace_tag = var.cost.databricks_workspace_tag }
   extra_dashboards  = var.extra_dashboards
   extra_alert_rules = var.extra_alert_rules
 }
@@ -22,10 +22,11 @@ locals {
   # change to either never replaces the instance (user data only has its units).
   cost_sync_files = local.cost_on ? {
     "cost-sync/config.json" = jsonencode({
-      bucket        = var.cost.bucket
-      prefix        = var.cost.normalized_prefix
-      providers     = sort(tolist(var.cost.providers))
-      run_join_tags = var.cost.run_join_tags
+      bucket                   = var.cost.bucket
+      prefix                   = var.cost.normalized_prefix
+      providers                = sort(tolist(var.cost.providers))
+      run_join_tags            = var.cost.run_join_tags
+      databricks_workspace_tag = var.cost.databricks_workspace_tag
       budgets = {
         total    = var.cost.budgets.total
         projects = var.cost.budgets.projects

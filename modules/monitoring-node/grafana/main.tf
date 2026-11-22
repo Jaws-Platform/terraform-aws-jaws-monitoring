@@ -71,6 +71,7 @@ locals {
   module_dashboards = merge(
     { "Monitoring/host.json" = jsonencode(local.host_dashboard) },
     { for path, d in { "Cost/overview.json" = local.cost_dashboards.overview, "Cost/project.json" = local.cost_dashboards.project } : path => jsonencode(d) if local.cost_on },
+    { for path, d in { "Cost/databricks.json" = local.cost_dashboards.databricks } : path => jsonencode(d) if local.databricks_on },
   )
   dashboards = merge(local.module_dashboards, var.extra_dashboards)
 
