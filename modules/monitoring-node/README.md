@@ -1,5 +1,107 @@
 # monitoring-node
 
+Part of [`Jaws-Platform/jaws-monitoring/aws`](https://registry.terraform.io/modules/Jaws-Platform/jaws-monitoring/aws/latest) · [Registry](https://registry.terraform.io/modules/Jaws-Platform/jaws-monitoring/aws/latest/submodules/monitoring-node) · [Source](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/tree/main/modules/monitoring-node)
+
+One small Graviton instance running the monitoring stack in Docker Compose:
+Grafana (on Postgres), Prometheus, node-exporter, cAdvisor and
+postgres-exporter, and, with a `domain`, Caddy for HTTPS and a blackbox probe
+of the public address. Its state lives on a separate data volume, and its
+configuration arrives as a content-addressed bundle, so a dashboard or
+alerting change never replaces the instance.
+
+What it creates:
+
+- **the instance**: the Amazon Linux 2023 arm64 image named `ami_name`,
+  IMDSv2 only (hop limit 2, so containers reach the instance role), standard
+  CPU credits, an encrypted gp3 root volume, a public IPv4 address, a role
+  with Session Manager and nothing else to reach it by;
+- **the data volume** `<name>-data` (encrypted gp3), mounted at `/data` and
+  kept when the instance is replaced, with optional daily snapshots;
+- **the security group**: no ingress at all without a `domain`; with one,
+  443 and 80 (Let's Encrypt and the redirect) only;
+- **the DNS record** (with a `domain`): the node upserts its own address at
+  every boot, because it changes on every stop and start; its role may
+  change only that one A record;
+- **the config bucket** `<name>-config-<account>` and the parameters
+  `/<name>/node/config-bundle`, `status` and `running-config`.
+
+Every resource carries `Name` and `Component = "monitoring"`; every other tag
+comes from the caller's provider `default_tags`.
+
+## How a change rolls out
+
+Terraform renders every file the stack runs with (`compose.yaml`,
+Prometheus, Caddy, Grafana provisioning) into one JSON bundle, stores it at
+`bundles/<sha256>.json` and names it in `/<name>/node/config-bundle`. The
+reconciler on the node (`monitoring-reconcile`, at boot and every 5 minutes)
+converges to it:
+
+1. it first starts the current release with the values it last ran with, so
+   the stack comes up even when S3 or SSM can't be reached;
+2. it reads the bundle, every secret it names and the values it generates
+   once (the Postgres password, kept on the data volume);
+3. it writes the new release and pulls its images, retried five times; until
+   all of that worked, the running stack is untouched;
+4. it swaps the release in and runs `docker compose up -d`; each service is
+   labelled with a hash of the files it mounts, so only the services whose
+   files changed are recreated.
+
+`/<name>/node/status` says how it went: `ok`, or `failed:missing secret
+<parameter>`, `failed:bundle <problem>`, `failed:pull` or `failed:up`. To
+apply a change at once instead of within 5 minutes, start
+`monitoring-reconcile.service` through Session Manager.
+
+Changing the bootstrap (`ami_name`, the Compose plugin, the scripts)
+replaces the instance; the new one reattaches the data volume and carries
+on. Container images are pinned by digest; a version bump is a bundle
+change, not an instance replacement.
+
+## Before the first apply
+
+Set the two SecureString parameters `grafana_admin` names, the admin user
+name and password. Until they exist the node reports
+`failed:missing secret <parameter>` and starts nothing new.
+
+## Reaching Grafana
+
+With a `domain`, at `https://<domain>`. Without one, through a port forward:
+
+```sh
+aws ssm start-session --target <instance_id> \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters portNumber=3000,localPortNumber=3000
+```
+
+## Recovery
+
+| Event | What happens | What's lost |
+|---|---|---|
+| Stop and start | The disks persist; the stack comes back, and DNS follows the new address | Metrics for the time it was off |
+| Reboot or EC2 recovery | Same disks, same instance | Minutes of metrics |
+| Instance replaced | The new instance reattaches the data volume and carries on | Minutes of metrics |
+| Data volume lost | Dashboards and alerts are reprovisioned from the bundle; Grafana users other than the admin must be added again | Prometheus history since the last snapshot |
+
+## Usage
+
+```hcl
+module "monitoring_node" {
+  source  = "Jaws-Platform/jaws-monitoring/aws//modules/monitoring-node"
+  version = "0.2.0" # x-release-please-version
+
+  name      = "acme-monitoring"
+  vpc_id    = "vpc-0123456789abcdef0"
+  subnet_id = "subnet-0123456789abcdef0"
+  ami_name  = "al2023-ami-2023.12.20261026.1-kernel-6.18-arm64"
+  domain    = "grafana.example.com"
+  zone_id   = "Z0123456789ABCDEFGHIJ"
+
+  grafana_admin = {
+    user_parameter     = "/acme/monitoring/grafana-admin-user"
+    password_parameter = "/acme/monitoring/grafana-admin-password"
+  }
+}
+```
+
 <!-- BEGIN_TF_DOCS -->
 ## Requirements
 

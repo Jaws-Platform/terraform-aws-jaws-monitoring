@@ -312,3 +312,116 @@ run "the_user_data_bootstraps_every_boot" {
     error_message = "cloud-config, within EC2's 16 KB user data limit"
   }
 }
+
+run "every_image_is_pinned_by_digest" {
+  command = plan
+
+  assert {
+    condition     = alltrue([for s in values(yamldecode(local.bundle.files["compose.yaml"]).services) : strcontains(s.image, "@sha256:")])
+    error_message = "every container image is pinned by digest"
+  }
+}
+
+run "the_stack_has_memory_limits_and_restarts" {
+  command = plan
+
+  assert {
+    condition     = alltrue([for s in values(yamldecode(local.bundle.files["compose.yaml"]).services) : s.restart == "unless-stopped" && can(s.mem_limit)])
+    error_message = "every service restarts on its own and has a memory limit"
+  }
+
+  assert {
+    condition     = yamldecode(local.bundle.files["compose.yaml"]).services.prometheus.mem_limit == "1g" && yamldecode(local.bundle.files["compose.yaml"]).services.grafana.mem_limit == "512m"
+    error_message = "Prometheus may use 1 GB, Grafana 512 MB"
+  }
+}
+
+run "without_a_domain_grafana_is_only_on_localhost" {
+  command = plan
+
+  assert {
+    condition     = toset(keys(yamldecode(local.bundle.files["compose.yaml"]).services)) == toset(["grafana", "prometheus", "node-exporter", "cadvisor", "postgres", "postgres-exporter"])
+    error_message = "without a domain there is no Caddy and no blackbox probe"
+  }
+
+  assert {
+    condition     = yamldecode(local.bundle.files["compose.yaml"]).services.grafana.ports == ["127.0.0.1:3000:3000"]
+    error_message = "Grafana is published on the loopback only, for a Session Manager port forward"
+  }
+}
+
+run "with_a_domain_caddy_serves_grafana_and_blackbox_probes_it" {
+  command = plan
+
+  variables {
+    domain  = "grafana.example.com"
+    zone_id = "Z123"
+  }
+
+  assert {
+    condition     = yamldecode(local.bundle.files["compose.yaml"]).services.caddy.ports == ["80:80", "443:443"] && !can(yamldecode(local.bundle.files["compose.yaml"]).services.grafana.ports)
+    error_message = "Caddy publishes 80 and 443; Grafana publishes nothing"
+  }
+
+  assert {
+    condition     = strcontains(local.bundle.files["caddy/Caddyfile"], "grafana.example.com {") && strcontains(local.bundle.files["caddy/Caddyfile"], "reverse_proxy grafana:3000") && strcontains(local.bundle.files["caddy/Caddyfile"], "@metrics path /metrics /metrics/*") && strcontains(local.bundle.files["caddy/Caddyfile"], "respond @metrics 404")
+    error_message = "Caddy serves Grafana at the domain and hides its /metrics"
+  }
+
+  assert {
+    condition     = one([for j in yamldecode(local.bundle.files["prometheus/prometheus.yml"]).scrape_configs : j.static_configs[0].targets if j.job_name == "blackbox"]) == ["https://grafana.example.com"]
+    error_message = "the blackbox probe watches the public address and its certificate"
+  }
+
+  assert {
+    condition     = yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.GF_SERVER_ROOT_URL == "https://grafana.example.com" && yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.GF_SECURITY_COOKIE_SECURE == "true"
+    error_message = "Grafana knows its public address and sends secure cookies"
+  }
+}
+
+run "prometheus_keeps_a_year_within_a_size_cap" {
+  command = plan
+
+  assert {
+    condition     = contains(yamldecode(local.bundle.files["compose.yaml"]).services.prometheus.command, "--storage.tsdb.retention.time=365d") && contains(yamldecode(local.bundle.files["compose.yaml"]).services.prometheus.command, "--storage.tsdb.retention.size=12GB")
+    error_message = "a year of metrics, never more than 12 GB"
+  }
+
+  assert {
+    condition     = toset([for j in yamldecode(local.bundle.files["prometheus/prometheus.yml"]).scrape_configs : j.job_name]) == toset(["prometheus", "node", "cadvisor", "postgres", "grafana"])
+    error_message = "Prometheus scrapes itself, the host, the containers, Postgres and Grafana"
+  }
+}
+
+run "grafana_uses_postgres_and_provisioned_sources" {
+  command = plan
+
+  assert {
+    condition     = yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.GF_DATABASE_TYPE == "postgres" && yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.GF_SECURITY_ADMIN_PASSWORD == "$${GF_SECURITY_ADMIN_PASSWORD}"
+    error_message = "Grafana keeps its state in Postgres and takes its admin password from the node's secrets"
+  }
+
+  assert {
+    condition     = [for d in yamldecode(local.bundle.files["grafana/provisioning/datasources/datasources.yaml"]).datasources : "${d.uid}:${try(d.isDefault, false)}"] == ["prometheus:true", "cloudwatch:false"]
+    error_message = "Prometheus (the default) and CloudWatch are provisioned"
+  }
+
+  assert {
+    condition     = one([for d in yamldecode(local.bundle.files["grafana/provisioning/datasources/datasources.yaml"]).datasources : d.jsonData.defaultRegion if d.uid == "cloudwatch"]) == "us-east-1"
+    error_message = "CloudWatch reads the node's region with the instance role"
+  }
+
+  assert {
+    condition     = local.bundle.secrets == { GF_SECURITY_ADMIN_USER = "/acme/monitoring/grafana-admin-user", GF_SECURITY_ADMIN_PASSWORD = "/acme/monitoring/grafana-admin-password" } && local.bundle.generated == ["POSTGRES_PASSWORD"]
+    error_message = "the bundle names the secrets to read and the one to generate"
+  }
+}
+
+run "a_service_is_recreated_only_when_its_files_change" {
+  command = plan
+
+  assert {
+    condition     = yamldecode(local.bundle.files["compose.yaml"]).services.prometheus.labels["monitoring.config-hash"] == sha256(local.bundle.files["prometheus/prometheus.yml"])
+    error_message = "a service's label hashes the files it mounts, so compose recreates exactly what changed"
+  }
+}
