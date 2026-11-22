@@ -117,7 +117,7 @@ locals {
           restart    = local.restart
           mem_limit  = "512m"
           depends_on = { postgres = { condition = "service_healthy" } }
-          environment = {
+          environment = merge({
             GF_DATABASE_TYPE                                  = "postgres"
             GF_DATABASE_HOST                                  = "postgres:5432"
             GF_DATABASE_NAME                                  = "grafana"
@@ -132,7 +132,10 @@ locals {
             GF_SERVER_ROOT_URL                                = local.grafana_root_url
             GF_ANALYTICS_REPORTING_ENABLED                    = "false"
             GF_ANALYTICS_CHECK_FOR_UPDATES                    = "false"
-          }
+            },
+            # Each Slack webhook, for the contact points to expand.
+            { for env in keys(local.slack_secrets) : env => "$${${env}:?}" },
+          )
           volumes = [
             "/data/config/current/grafana/provisioning:/etc/grafana/provisioning:ro",
             "/data/config/current/grafana/dashboards:/var/lib/grafana/dashboards:ro",
@@ -234,7 +237,7 @@ locals {
         GF_SECURITY_ADMIN_USER     = var.grafana_admin.user_parameter
         GF_SECURITY_ADMIN_PASSWORD = var.grafana_admin.password_parameter
       },
-      local.extra_bundle_secrets,
+      local.slack_secrets,
     )
     generated = ["POSTGRES_PASSWORD"]
   }

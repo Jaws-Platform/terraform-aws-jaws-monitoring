@@ -544,3 +544,76 @@ run "rejects_a_percentage_over_100" {
 
   expect_failures = [var.thresholds]
 }
+
+run "with_slack_the_node_reads_each_webhook" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }, routes = { host = "platform", pipeline = "platform", cost = "costs" } }
+  }
+
+  assert {
+    condition     = contains(one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s.Resource if s.Sid == "ReadTheParameters"]), "arn:aws:ssm:us-east-1:123456789012:parameter/acme/monitoring/slack/platform") && contains(one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s.Resource if s.Sid == "ReadTheParameters"]), "arn:aws:ssm:us-east-1:123456789012:parameter/acme/monitoring/slack/costs")
+    error_message = "the role may read each webhook parameter"
+  }
+
+  assert {
+    condition     = local.bundle.secrets.SLACK_WEBHOOK_COSTS == "/acme/monitoring/slack/costs" && local.bundle.secrets.SLACK_WEBHOOK_PLATFORM == "/acme/monitoring/slack/platform"
+    error_message = "the reconciler reads each webhook into its variable"
+  }
+
+  assert {
+    condition     = yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.SLACK_WEBHOOK_PLATFORM == "$${SLACK_WEBHOOK_PLATFORM:?}" && yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.SLACK_WEBHOOK_COSTS == "$${SLACK_WEBHOOK_COSTS:?}"
+    error_message = "Grafana gets each webhook in its environment, and compose refuses to start it without one"
+  }
+}
+
+run "rejects_a_route_to_an_unknown_channel" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/slack/platform" }, routes = { host = "nope" } }
+  }
+
+  expect_failures = [var.slack]
+}
+
+run "rejects_routes_without_host" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/slack/platform" }, routes = { cost = "platform" } }
+  }
+
+  expect_failures = [var.slack]
+}
+
+run "rejects_an_unknown_area" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "/acme/slack/platform" }, routes = { host = "platform", billing = "platform" } }
+  }
+
+  expect_failures = [var.slack]
+}
+
+run "rejects_a_bad_channel_name" {
+  command = plan
+
+  variables {
+    slack = { channels = { Platform_1 = "/acme/slack/platform" }, routes = { host = "Platform_1" } }
+  }
+
+  expect_failures = [var.slack]
+}
+
+run "rejects_a_relative_parameter" {
+  command = plan
+
+  variables {
+    slack = { channels = { platform = "acme/slack/platform" }, routes = { host = "platform" } }
+  }
+
+  expect_failures = [var.slack]
+}

@@ -10,5 +10,5 @@ output "files" {
 
 output "webhook_env" {
   description = "Each Slack channel's webhook environment variable, which Grafana expands in its contact point."
-  value       = {}
+  value       = local.webhook_env
 }

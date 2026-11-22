@@ -710,3 +710,95 @@ run "every_rule_waits_at_least_two_minutes" {
     error_message = "a Prometheus or Grafana restart during a config change must not post: every rule waits at least 2 minutes"
   }
 }
+
+run "each_channel_is_a_contact_point_and_each_area_a_route" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    slack = { channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }, routes = { host = "platform", pipeline = "platform", cost = "costs" } }
+  }
+
+  assert {
+    condition     = jsonencode(sort([for c in jsondecode(output.files["grafana/provisioning/alerting/contact-points.json"]).contactPoints : c.name])) == jsonencode(["slack-costs", "slack-platform"])
+    error_message = "one contact point per channel"
+  }
+
+  assert {
+    condition     = one(one([for c in jsondecode(output.files["grafana/provisioning/alerting/contact-points.json"]).contactPoints : c if c.name == "slack-platform"]).receivers).settings.url == "$SLACK_WEBHOOK_PLATFORM" && one(one([for c in jsondecode(output.files["grafana/provisioning/alerting/contact-points.json"]).contactPoints : c if c.name == "slack-costs"]).receivers).settings.url == "$SLACK_WEBHOOK_COSTS"
+    error_message = "each webhook URL comes from Grafana's environment, never from the bundle"
+  }
+
+  assert {
+    condition     = alltrue([for c in jsondecode(output.files["grafana/provisioning/alerting/contact-points.json"]).contactPoints : one(c.receivers).type == "slack" && one(c.receivers).uid == c.name && one(c.receivers).settings.title == "{{ template \"monitoring.title\" . }}" && one(c.receivers).settings.text == "{{ template \"monitoring.text\" . }}" && one(c.receivers).disableResolveMessage == false])
+    error_message = "every channel uses the one template and posts resolved messages too"
+  }
+
+  assert {
+    condition     = one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).receiver == "slack-platform" && jsonencode(one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).group_by) == jsonencode(["grafana_folder", "alertname"]) && one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).repeat_interval == "4h" && one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).group_wait == "30s" && one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).group_interval == "5m"
+    error_message = "the root policy goes to the host channel, grouped by folder and alertname, repeating every 4 hours"
+  }
+
+  assert {
+    condition     = length(one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes) == 3 && jsonencode(one([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : r if r.receiver == "slack-costs"]).object_matchers) == jsonencode([["area", "=", "cost"]])
+    error_message = "one route per area, each to its channel"
+  }
+
+  assert {
+    condition     = output.webhook_env == { costs = "SLACK_WEBHOOK_COSTS", platform = "SLACK_WEBHOOK_PLATFORM" }
+    error_message = "the node is told which variable carries each channel's webhook"
+  }
+}
+
+run "one_template_formats_every_message" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    slack = { channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }, routes = { host = "platform", pipeline = "platform", cost = "costs" } }
+  }
+
+  assert {
+    condition     = length(jsondecode(output.files["grafana/provisioning/alerting/templates.json"]).templates) == 1 && one(jsondecode(output.files["grafana/provisioning/alerting/templates.json"]).templates).name == "monitoring-slack"
+    error_message = "one template group formats every message"
+  }
+
+  assert {
+    condition     = strcontains(one(jsondecode(output.files["grafana/provisioning/alerting/templates.json"]).templates).template, "define \"monitoring.title\"") && strcontains(one(jsondecode(output.files["grafana/provisioning/alerting/templates.json"]).templates).template, "define \"monitoring.text\"") && !strcontains(one(jsondecode(output.files["grafana/provisioning/alerting/templates.json"]).templates).template, "$")
+    error_message = "it defines the title and the text, with no $ for Grafana to expand"
+  }
+
+  assert {
+    condition     = strcontains(one(jsondecode(output.files["grafana/provisioning/alerting/templates.json"]).templates).template, "(ne .Name \"alertname\") (ne .Name \"grafana_folder\") (ne .Name \"severity\")") && strcontains(one(jsondecode(output.files["grafana/provisioning/alerting/templates.json"]).templates).template, ".PanelURL")
+    error_message = "the message lists the labels that matter and links the panel"
+  }
+}
+
+run "without_slack_the_policy_tree_is_reset" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = !contains(keys(output.files), "grafana/provisioning/alerting/contact-points.json") && !contains(keys(output.files), "grafana/provisioning/alerting/templates.json")
+    error_message = "without Slack there is nothing to post to"
+  }
+
+  assert {
+    condition     = jsonencode(jsondecode(output.files["grafana/provisioning/alerting/policies.json"])) == jsonencode({ apiVersion = 1, resetPolicies = [1] })
+    error_message = "and Grafana's stored policy tree is reset, so a removed Slack leaves nothing pointing at it"
+  }
+
+  assert {
+    condition     = output.webhook_env == {}
+    error_message = "no webhooks to read"
+  }
+}

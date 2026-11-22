@@ -7,9 +7,9 @@
 #
 #   phase 1  render, check every PromQL query with promtool, start Grafana on
 #            the files, compare its API with the files, and read its logs
-#   phase 2  render a changed configuration (features switched off, files
-#            removed), start a new Grafana on the same database, compare again:
-#            what was removed must be gone
+#   phase 2  render a changed configuration (credits and Slack switched off,
+#            a domain added, files removed), start a new Grafana on the same
+#            database, compare again: what was removed must be gone
 #
 # Needs docker, terraform and python3; nothing touches a cloud. The Grafana and
 # Prometheus images are the ones bundle.tf pins.
@@ -66,6 +66,10 @@ phase1_args() {
   instance_type     = "t9g.medium"
   domain            = null
 $thresholds
+  slack = {
+    channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }
+    routes   = { host = "platform", pipeline = "platform", cost = "costs" }
+  }
   extra_dashboards  = { "Extra/extra.json" = file("$here/fixtures/extra-dashboard.json") }
   extra_alert_rules = { smoke = file("$here/fixtures/extra-rule.yaml") }
 EOF

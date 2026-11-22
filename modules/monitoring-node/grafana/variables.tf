@@ -40,6 +40,15 @@ variable "thresholds" {
   })
 }
 
+variable "slack" {
+  description = "Slack channels (name => SSM parameter of its webhook) and routes (area => channel), already checked; null for no notifications."
+  type = object({
+    channels = map(string)
+    routes   = map(string)
+  })
+  default = null
+}
+
 variable "extra_dashboards" {
   description = "More dashboards: \"<Folder>/<name>.json\" to the dashboard's JSON."
   type        = map(string)

@@ -57,9 +57,10 @@ locals {
 
   # Alerting provisioning files the module renders: path => document (an
   # object, encoded below).
-  module_alerting = {
-    "grafana/provisioning/alerting/rules-host.json" = local.host_rules_file
-  }
+  module_alerting = merge(
+    { "grafana/provisioning/alerting/rules-host.json" = local.host_rules_file },
+    local.notification_files,
+  )
 
   extra_rules_path = { for name, _ in var.extra_alert_rules : name => "grafana/provisioning/alerting/rules-extra-${name}.json" }
 

@@ -182,3 +182,32 @@ variable "thresholds" {
     error_message = "container_restarts are whole numbers of restarts, at least 1."
   }
 }
+
+variable "slack" {
+  description = "Slack notifications: channels (name => the SSM SecureString parameter holding its incoming-webhook URL) and routes (area => channel; areas are host, pipeline and cost, and host is required, since the root policy uses it). null means no notifications: alerts show in Grafana only. Adding a channel is one webhook parameter and one line here."
+  type = object({
+    channels = map(string)
+    routes   = map(string)
+  })
+  default = null
+
+  validation {
+    condition     = var.slack == null ? true : length(var.slack.channels) > 0 && alltrue([for c in keys(var.slack.channels) : can(regex("^[a-z][a-z0-9-]{0,29}$", c))])
+    error_message = "slack.channels needs at least one channel, each named with a lowercase letter, then lowercase letters, digits or - (at most 30)."
+  }
+
+  validation {
+    condition     = var.slack == null ? true : alltrue([for p in values(var.slack.channels) : startswith(p, "/")])
+    error_message = "Each slack channel's value is the full name of its SSM parameter, starting with /."
+  }
+
+  validation {
+    condition     = var.slack == null ? true : contains(keys(var.slack.routes), "host") && alltrue([for a in keys(var.slack.routes) : contains(["host", "pipeline", "cost"], a)])
+    error_message = "slack.routes maps areas (host, pipeline, cost) to channels, and must route host."
+  }
+
+  validation {
+    condition     = var.slack == null ? true : alltrue([for c in values(var.slack.routes) : contains(keys(var.slack.channels), c)])
+    error_message = "Every slack route names one of slack.channels."
+  }
+}

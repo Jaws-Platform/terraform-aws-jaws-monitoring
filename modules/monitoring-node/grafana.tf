@@ -9,13 +9,14 @@ module "grafana" {
   instance_type     = var.instance_type
   domain            = var.domain
   thresholds        = var.thresholds
+  slack             = var.slack
   extra_dashboards  = var.extra_dashboards
   extra_alert_rules = var.extra_alert_rules
 }
 
 locals {
-  # Secrets the reconciler reads for Grafana beyond its admin sign-in
-  # (variable name => SSM parameter), and the parameters the role may read.
-  extra_bundle_secrets    = {}
-  extra_secret_parameters = []
+  # Each Slack channel's webhook: the reconciler reads its parameter into the
+  # variable Grafana's contact point expands (variable name => parameter).
+  slack_channels = var.slack == null ? {} : var.slack.channels
+  slack_secrets  = { for channel, env in module.grafana.webhook_env : env => local.slack_channels[channel] }
 }
