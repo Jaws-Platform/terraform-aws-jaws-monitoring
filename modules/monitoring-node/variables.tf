@@ -80,7 +80,7 @@ variable "acme_email" {
 }
 
 variable "grafana_admin" {
-  description = "The SSM SecureString parameters holding Grafana's admin user name and password. The node reads them at every reconcile; set them before the first apply."
+  description = "The SSM SecureString parameters (default aws/ssm key) holding Grafana's admin user name and password. Set them before the first apply. The node checks them every 5 minutes; a changed password is applied with Grafana's admin password reset."
   type = object({
     user_parameter     = string
     password_parameter = string

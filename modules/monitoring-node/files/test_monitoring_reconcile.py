@@ -59,6 +59,8 @@ args = sys.argv[1:]
 s["calls"].append(["docker"] + args)
 s.setdefault("env_seen", []).append(os.environ.get("GF_SECURITY_ADMIN_PASSWORD"))
 code = 0
+if "exec" in args:
+    s.setdefault("stdin", []).append(sys.stdin.read())
 if "pull" in args and s["fail"].get("pull", 0) > 0:
     s["fail"]["pull"] -= 1; code = 1
 if "up" in args and s["fail"].get("up"):
@@ -244,6 +246,83 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(len(ups), 1)
         self.assertIn(str(self.node.root / "data/config/releases/aaa"), " ".join(ups[0]))
         self.assertIn("s3cret 'x' $y", self.node.state["env_seen"])
+
+
+class ReplacementAndRecoveryTest(unittest.TestCase):
+    def setUp(self):
+        self.node = Node()
+        self.addCleanup(self.node.tmp.cleanup)
+
+    def wipe_root_volume(self):
+        # A replaced instance has a fresh root volume: only node.env (from user
+        # data) is there; the data volume and everything on it is kept.
+        for path in (self.node.root / "etc/monitoring").iterdir():
+            if path.name != "node.env":
+                path.unlink()
+
+    def test_a_replaced_instance_starts_its_bundle_again(self):
+        self.node.run()
+        self.wipe_root_volume()
+
+        result = self.node.run()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.node.calls("docker", "pull")), 1)
+        self.assertEqual(len(self.node.calls("docker", "up")), 1)
+        self.assertEqual(self.node.stack()["GF_SECURITY_ADMIN_PASSWORD"], "s3cret 'x' $y")
+        self.assertEqual(self.node.state["params"][f"{PREFIX}/status"], "ok")
+
+    def test_a_failed_up_is_reported_and_retried(self):
+        self.node.run()
+        self.node.publish("bundles/bbb.json", bundle("v2"))
+        self.node.state["fail"]["up"] = True
+        self.node.save()
+
+        self.assertEqual(self.node.run().returncode, 1)
+        self.assertEqual(self.node.state["params"][f"{PREFIX}/status"], "failed:up")
+        self.assertEqual(self.node.state["params"][f"{PREFIX}/running-config"], "bundles/aaa.json")
+
+        self.node.state["fail"]["up"] = False
+        self.node.save()
+        result = self.node.run()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.node.state["params"][f"{PREFIX}/status"], "ok")
+        self.assertEqual(self.node.state["params"][f"{PREFIX}/running-config"], "bundles/bbb.json")
+
+    def test_an_unchanged_bundle_reports_a_stack_that_will_not_start(self):
+        self.node.run()
+        self.node.state["fail"]["up"] = True
+        self.node.save()
+
+        result = self.node.run()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.node.state["params"][f"{PREFIX}/status"], "failed:up")
+
+    def test_a_rotated_password_resets_grafanas_admin(self):
+        self.node.run()
+        self.node.state["params"][PASSWORD] = "n3w-password"
+        self.node.save()
+
+        result = self.node.run()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.node.stack()["GF_SECURITY_ADMIN_PASSWORD"], "n3w-password")
+        resets = self.node.calls("docker", "exec", "reset-admin-password")
+        self.assertEqual(len(resets), 1)
+        self.assertIn("--password-from-stdin", resets[0])
+        self.assertEqual(self.node.state["stdin"], ["n3w-password"])
+        self.assertEqual(self.node.state["params"][f"{PREFIX}/status"], "ok")
+
+    def test_an_unexpected_error_is_reported(self):
+        self.node.publish("bundles/odd.json", json.dumps({"schema": "monitoring-bundle-1", "files": {"compose.yaml": 5},
+                                                          "secrets": {}, "generated": []}))
+
+        result = self.node.run()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(self.node.state["params"][f"{PREFIX}/status"].startswith("failed:internal"))
 
 
 if __name__ == "__main__":

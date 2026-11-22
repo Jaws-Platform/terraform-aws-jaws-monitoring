@@ -205,13 +205,14 @@ run "the_role_reads_its_bundle_and_secrets_and_writes_its_status" {
         Action   = ["cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "cloudwatch:GetMetricStatistics"]
         Resource = "*"
       },
+      {
+        Sid      = "SessionManager"
+        Effect   = "Allow"
+        Action   = ["ssm:UpdateInstanceInformation", "ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"]
+        Resource = "*"
+      },
     ]
-    error_message = "the node reads its bundle, its parameters and CloudWatch metrics, and writes only its status"
-  }
-
-  assert {
-    condition     = aws_iam_role_policy_attachment.ssm.policy_arn == "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-    error_message = "Session Manager is the only shell"
+    error_message = "the node reads its bundle, its parameters and CloudWatch metrics, writes only its status, and serves Session Manager; it can read no other parameter"
   }
 }
 
@@ -397,7 +398,7 @@ run "grafana_uses_postgres_and_provisioned_sources" {
   command = plan
 
   assert {
-    condition     = yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.GF_DATABASE_TYPE == "postgres" && yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.GF_SECURITY_ADMIN_PASSWORD == "$${GF_SECURITY_ADMIN_PASSWORD}"
+    condition     = yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.GF_DATABASE_TYPE == "postgres" && yamldecode(local.bundle.files["compose.yaml"]).services.grafana.environment.GF_SECURITY_ADMIN_PASSWORD == "$${GF_SECURITY_ADMIN_PASSWORD:?}" && yamldecode(local.bundle.files["compose.yaml"]).services.postgres.environment.POSTGRES_PASSWORD == "$${POSTGRES_PASSWORD:?}"
     error_message = "Grafana keeps its state in Postgres and takes its admin password from the node's secrets"
   }
 
@@ -423,5 +424,27 @@ run "a_service_is_recreated_only_when_its_files_change" {
   assert {
     condition     = yamldecode(local.bundle.files["compose.yaml"]).services.prometheus.labels["monitoring.config-hash"] == sha256(local.bundle.files["prometheus/prometheus.yml"])
     error_message = "a service's label hashes the files it mounts, so compose recreates exactly what changed"
+  }
+}
+
+run "mounts_resolve_through_the_stable_current_link" {
+  command = plan
+
+  variables {
+    domain  = "grafana.example.com"
+    zone_id = "Z123"
+  }
+
+  assert {
+    condition = (contains(yamldecode(local.bundle.files["compose.yaml"]).services.prometheus.volumes, "/data/config/current/prometheus:/etc/prometheus:ro")
+      && contains(yamldecode(local.bundle.files["compose.yaml"]).services.grafana.volumes, "/data/config/current/grafana/provisioning:/etc/grafana/provisioning:ro")
+      && contains(yamldecode(local.bundle.files["compose.yaml"]).services.caddy.volumes, "/data/config/current/caddy/Caddyfile:/etc/caddy/Caddyfile:ro")
+    && contains(yamldecode(local.bundle.files["compose.yaml"]).services["blackbox-exporter"].volumes, "/data/config/current/blackbox:/etc/blackbox_exporter:ro"))
+    error_message = "config mounts go through /data/config/current, so a new release does not change a service's own definition; only its config-hash label does"
+  }
+
+  assert {
+    condition     = !anytrue([for s in values(yamldecode(local.bundle.files["compose.yaml"]).services) : anytrue([for v in try(s.volumes, []) : startswith(v, "./")])])
+    error_message = "no mount is relative to the release folder"
   }
 }

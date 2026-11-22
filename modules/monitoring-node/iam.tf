@@ -1,7 +1,7 @@
 # The node's role: read its bundle and its parameters (the bundle name and the
 # secrets), write only its status, read CloudWatch metrics (Grafana's CPU
-# credit panels), and with a domain upsert its own A record. Session Manager is
-# the only way in.
+# credit panels), serve Session Manager (the only way in), and with a domain
+# upsert its own A record.
 
 locals {
   secret_parameter_names = concat([var.grafana_admin.user_parameter, var.grafana_admin.password_parameter], local.extra_secret_parameters)
@@ -33,6 +33,15 @@ locals {
         Sid      = "ReadMetrics"
         Effect   = "Allow"
         Action   = ["cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "cloudwatch:GetMetricStatistics"]
+        Resource = "*"
+      },
+      # Session Manager only. Not AmazonSSMManagedInstanceCore: it allows
+      # ssm:GetParameter on every parameter, so a compromised container could
+      # read every SecureString in the account.
+      {
+        Sid      = "SessionManager"
+        Effect   = "Allow"
+        Action   = ["ssm:UpdateInstanceInformation", "ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"]
         Resource = "*"
       },
     ],
@@ -76,11 +85,6 @@ resource "aws_iam_role_policy" "this" {
   name   = "monitoring-node"
   role   = aws_iam_role.this.id
   policy = jsonencode({ Version = "2012-10-17", Statement = local.policy_statements })
-}
-
-resource "aws_iam_role_policy_attachment" "ssm" {
-  role       = aws_iam_role.this.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_instance_profile" "this" {

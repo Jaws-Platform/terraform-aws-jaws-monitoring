@@ -10,7 +10,10 @@
 #   caddy/Caddyfile, blackbox/blackbox.yml           with a domain only
 #
 # secrets are SSM parameters the reconciler reads; generated values it makes
-# once on the node. compose.yaml refers to both as $${NAME}.
+# once on the node. compose.yaml refers to both as $${NAME:?}, so a value the
+# bundle forgot to name fails `compose up` instead of starting a service with
+# an empty password. Config mounts go through /data/config/current, so a new
+# release never changes a service's own definition; its config-hash label does.
 
 locals {
   default_images = {
@@ -142,7 +145,7 @@ locals {
         mem_limit = "512m"
         environment = {
           POSTGRES_USER     = "monitoring"
-          POSTGRES_PASSWORD = "$${POSTGRES_PASSWORD}"
+          POSTGRES_PASSWORD = "$${POSTGRES_PASSWORD:?}"
           POSTGRES_DB       = "grafana"
         }
         volumes     = ["/data/postgres:/var/lib/postgresql/data"]
@@ -160,9 +163,9 @@ locals {
             GF_DATABASE_HOST                                  = "postgres:5432"
             GF_DATABASE_NAME                                  = "grafana"
             GF_DATABASE_USER                                  = "monitoring"
-            GF_DATABASE_PASSWORD                              = "$${POSTGRES_PASSWORD}"
-            GF_SECURITY_ADMIN_USER                            = "$${GF_SECURITY_ADMIN_USER}"
-            GF_SECURITY_ADMIN_PASSWORD                        = "$${GF_SECURITY_ADMIN_PASSWORD}"
+            GF_DATABASE_PASSWORD                              = "$${POSTGRES_PASSWORD:?}"
+            GF_SECURITY_ADMIN_USER                            = "$${GF_SECURITY_ADMIN_USER:?}"
+            GF_SECURITY_ADMIN_PASSWORD                        = "$${GF_SECURITY_ADMIN_PASSWORD:?}"
             GF_SECURITY_DISABLE_INITIAL_ADMIN_PASSWORD_CHANGE = "true"
             GF_SECURITY_COOKIE_SECURE                         = local.served ? "true" : "false"
             GF_AUTH_ANONYMOUS_ENABLED                         = "false"
@@ -172,8 +175,8 @@ locals {
             GF_ANALYTICS_CHECK_FOR_UPDATES                    = "false"
           }
           volumes = [
-            "./grafana/provisioning:/etc/grafana/provisioning:ro",
-            "./grafana/dashboards:/var/lib/grafana/dashboards:ro",
+            "/data/config/current/grafana/provisioning:/etc/grafana/provisioning:ro",
+            "/data/config/current/grafana/dashboards:/var/lib/grafana/dashboards:ro",
             "/data/grafana:/var/lib/grafana",
           ]
           labels = { "monitoring.config-hash" = local.config_hash["grafana"] }
@@ -193,7 +196,7 @@ locals {
           "--storage.tsdb.retention.size=${var.prometheus_retention.size_gb}GB",
           "--web.enable-lifecycle",
         ]
-        volumes     = ["./prometheus:/etc/prometheus:ro", "/data/prometheus:/prometheus"]
+        volumes     = ["/data/config/current/prometheus:/etc/prometheus:ro", "/data/prometheus:/prometheus"]
         extra_hosts = ["host.docker.internal:host-gateway"]
         labels      = { "monitoring.config-hash" = sha256(local.bundle_files["prometheus/prometheus.yml"]) }
       }
@@ -235,7 +238,7 @@ locals {
         environment = {
           DATA_SOURCE_URI  = "postgres:5432/postgres?sslmode=disable"
           DATA_SOURCE_USER = "monitoring"
-          DATA_SOURCE_PASS = "$${POSTGRES_PASSWORD}"
+          DATA_SOURCE_PASS = "$${POSTGRES_PASSWORD:?}"
         }
       }
     },
@@ -250,7 +253,7 @@ locals {
       mem_limit  = "128m"
       ports      = ["80:80", "443:443"]
       depends_on = ["grafana"]
-      volumes    = ["./caddy/Caddyfile:/etc/caddy/Caddyfile:ro", "/data/caddy:/data"]
+      volumes    = ["/data/config/current/caddy/Caddyfile:/etc/caddy/Caddyfile:ro", "/data/caddy:/data"]
       labels     = { "monitoring.config-hash" = local.config_hash["caddy"] }
     }
 
@@ -259,7 +262,7 @@ locals {
       restart   = local.restart
       mem_limit = "64m"
       command   = ["--config.file=/etc/blackbox_exporter/blackbox.yml"]
-      volumes   = ["./blackbox:/etc/blackbox_exporter:ro"]
+      volumes   = ["/data/config/current/blackbox:/etc/blackbox_exporter:ro"]
       labels    = { "monitoring.config-hash" = local.config_hash["blackbox-exporter"] }
     }
   }

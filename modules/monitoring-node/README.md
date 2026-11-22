@@ -38,16 +38,26 @@ converges to it:
 
 1. it first starts the current release with the values it last ran with, so
    the stack comes up even when S3 or SSM can't be reached;
-2. it reads the bundle, every secret it names and the values it generates
-   once (the Postgres password, kept on the data volume);
+2. it reads the bundle name and the secrets the bundle names; if neither
+   changed, that is all. Otherwise it downloads the bundle and makes the
+   values it generates once (the Postgres password, kept on the data
+   volume);
 3. it writes the new release and pulls its images, retried five times; until
    all of that worked, the running stack is untouched;
-4. it swaps the release in and runs `docker compose up -d`; each service is
+4. it saves the values, swaps the release in and runs `docker compose up -d`;
+   config is mounted through `/data/config/current` and each service is
    labelled with a hash of the files it mounts, so only the services whose
-   files changed are recreated.
+   files changed are recreated. A rotated Grafana admin password is then
+   applied with `grafana cli admin reset-admin-password`.
 
-`/<name>/node/status` says how it went: `ok`, or `failed:missing secret
-<parameter>`, `failed:bundle <problem>`, `failed:pull` or `failed:up`. To
+What the node runs is recorded on its root volume, with the values it runs
+with, so a replaced instance always reconciles in full.
+
+`/<name>/node/status` says how it went, and is written only when it changes:
+`ok`, or `failed:missing secret <parameter>`, `failed:bundle <problem>`,
+`failed:pull`, `failed:up` (also when the running stack will not start),
+`failed:password-reset` or `failed:internal <error>`. `monitoring-reconcile
+--force` reconciles in full even when nothing changed. To
 apply a change at once instead of within 5 minutes, start
 `monitoring-reconcile.service` through Session Manager.
 
@@ -59,8 +69,13 @@ change, not an instance replacement.
 ## Before the first apply
 
 Set the two SecureString parameters `grafana_admin` names, the admin user
-name and password. Until they exist the node reports
-`failed:missing secret <parameter>` and starts nothing new.
+name and password, encrypted with the default `aws/ssm` key (the role is
+granted no other key). Until they exist the node reports
+`failed:missing secret <parameter>` and starts nothing new. To rotate the
+password, change the parameter: within 5 minutes the node applies it. The
+role can read only the parameters the module names, not the account's other
+SecureStrings: it gets Session Manager's own actions, not the
+`AmazonSSMManagedInstanceCore` policy.
 
 ## Reaching Grafana
 
@@ -131,7 +146,6 @@ No modules.
 | [aws_iam_role.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
 | [aws_iam_role_policy.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy) | resource |
 | [aws_iam_role_policy_attachment.snapshots](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
-| [aws_iam_role_policy_attachment.ssm](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
 | [aws_instance.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance) | resource |
 | [aws_route53_record.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/route53_record) | resource |
 | [aws_s3_bucket.config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket) | resource |
@@ -158,7 +172,7 @@ No modules.
 | Name | Description | Type | Default | Required |
 | ---- | ----------- | ---- | ------- | :------: |
 | ami\_name | The exact name of the Amazon Linux 2023 arm64 image to run, e.g. `al2023-ami-2023.12.20261026.1-kernel-6.18-arm64`. Changing it replaces the instance; the data volume is reattached. | `string` | n/a | yes |
-| grafana\_admin | The SSM SecureString parameters holding Grafana's admin user name and password. The node reads them at every reconcile; set them before the first apply. | <pre>object({<br/>    user_parameter     = string<br/>    password_parameter = string<br/>  })</pre> | n/a | yes |
+| grafana\_admin | The SSM SecureString parameters (default aws/ssm key) holding Grafana's admin user name and password. Set them before the first apply. The node checks them every 5 minutes; a changed password is applied with Grafana's admin password reset. | <pre>object({<br/>    user_parameter     = string<br/>    password_parameter = string<br/>  })</pre> | n/a | yes |
 | name | Names the instance, its role, security group, data volume (`<name>-data`), config bucket (`<name>-config-<account>`) and parameters (`/<name>/node/…`). | `string` | n/a | yes |
 | subnet\_id | A public subnet for the node. The data volume is created in its availability zone, so moving the node to another zone means a new volume. | `string` | n/a | yes |
 | vpc\_id | The VPC of the node's subnet. | `string` | n/a | yes |
