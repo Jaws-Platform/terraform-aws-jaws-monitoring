@@ -9,7 +9,7 @@ locals {
     { name = "environment", label = "Environment", query = "SELECT DISTINCT coalesce(environment, '(none)') FROM cost.daily ORDER BY 1", column = "coalesce(environment, '(none)')" },
   ]
 
-  project_scope = "FROM cost.month_to_date WHERE scope = 'project' AND name IN ($project)"
+  project_scope = "FROM cost.month_to_date WHERE scope = 'project' AND name = $${project:sqlstring}"
   project_rows  = "FROM cost.daily WHERE $__timeFilter(day) AND ${local.cost_filter.project}"
   project_month = "FROM cost.daily WHERE day >= ${local.month_start} AND ${local.cost_filter.project}"
 
@@ -31,7 +31,7 @@ locals {
       {
         id          = 12, title = "Running spend each month, against the budget", grid = { x = 0, y = 7, w = 24, h = 8 }, draw = "line", stack = false
         description = "Each month's spend so far, day by day (it starts again on the 1st), with the monthly budget as a dashed red line. Crossing it is where the month-to-date alert fires."
-        sql         = "SELECT day::timestamp AS time, 'spent' AS metric, sum(sum(billed_cost)) OVER (PARTITION BY date_trunc('month', day) ORDER BY day) AS value FROM cost.daily WHERE day >= date_trunc('month', $__timeFrom()::date)::date AND day <= $__timeTo()::date AND ${local.cost_filter.project} GROUP BY day UNION ALL SELECT g::timestamp, 'budget', b.monthly_usd FROM cost.budgets b, generate_series($__timeFrom()::date, $__timeTo()::date, interval '1 day') AS g WHERE b.scope = 'project' AND b.name IN ($project) ORDER BY 1"
+        sql         = "SELECT day::timestamp AS time, 'spent' AS metric, sum(sum(billed_cost)) OVER (PARTITION BY date_trunc('month', day) ORDER BY day) AS value FROM cost.daily WHERE day >= date_trunc('month', $__timeFrom()::date)::date AND day <= $__timeTo()::date AND ${local.cost_filter.project} GROUP BY day UNION ALL SELECT g::timestamp, 'budget', b.monthly_usd FROM cost.budgets b, generate_series($__timeFrom()::date, $__timeTo()::date, interval '1 day') AS g WHERE b.scope = 'project' AND b.name = $${project:sqlstring} ORDER BY 1"
         overrides = [{ matcher = { id = "byName", options = "budget" }, properties = [
           { id = "custom.lineStyle", value = { fill = "dash", dash = [10, 10] } },
           { id = "color", value = { mode = "fixed", fixedColor = "red" } },

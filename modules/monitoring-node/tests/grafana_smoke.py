@@ -146,10 +146,24 @@ def cost_problems(url: str, auth: str) -> list:
 def cost_query_problems(release: Path, url: str, auth: str) -> list:
     """Every SQL panel of the cost dashboards runs against the real cost database.
 
-    Grafana expands dashboard variables in the browser. A variable with an
-    allValue becomes that value, which is what "All" sends; any other becomes
-    its own query, `($name)` -> `(<query>)`, a value it can take."""
+    Grafana expands dashboard variables in the browser, and so does this, the
+    way Grafana 13.3's Postgres plugin does. A variable with an allValue
+    becomes that value, which is what "All" sends. Any other is one value, the
+    first its query returns ('' with none): `${name:sqlstring}` quoted, a bare
+    `$name` inserted raw, without quotes."""
     found = []
+
+    def first_value(query: str) -> str:
+        body = json.dumps({"from": "now-90d", "to": "now", "queries": [{
+            "refId": "A", "datasource": {"uid": "cost", "type": "grafana-postgresql-datasource"},
+            "rawSql": query, "format": "table"}]}).encode()
+        request = urllib.request.Request(url + "/api/ds/query", data=body, method="POST",
+                                         headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            frames = json.loads(response.read())["results"]["A"].get("frames") or []
+        values = frames[0]["data"]["values"] if frames else []
+        return "" if not values or not values[0] else str(values[0][0])
+
     for path, board in dashboards(release).items():
         variables = board.get("templating", {}).get("list", [])
         for p in panels(board):
@@ -161,7 +175,11 @@ def cost_query_problems(release: Path, url: str, auth: str) -> list:
                     if v.get("allValue") is not None:
                         sql = re.sub(r"\$" + re.escape(v["name"]) + r"\b", lambda _: v["allValue"], sql)
                     else:
-                        sql = sql.replace(f"(${v['name']})", f"({v['query']})")
+                        text = first_value(v["query"])
+                        quoted = "'" + text.replace("'", "''") + "'"
+                        sql = sql.replace("${%s:sqlstring}" % v["name"], quoted)
+                        sql = re.sub(r"\$\{" + re.escape(v["name"]) + r"\}|\$" + re.escape(v["name"]) + r"\b",
+                                     lambda _: text.replace("'", "''"), sql)
                 body = json.dumps({"from": "now-90d", "to": "now", "queries": [{
                     "refId": "A", "datasource": {"uid": "cost", "type": "grafana-postgresql-datasource"},
                     "rawSql": sql, "format": t.get("format", "table")}]}).encode()

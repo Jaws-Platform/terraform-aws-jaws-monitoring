@@ -5,7 +5,8 @@
 #
 # A multi-value variable says "All" as '__all' (allValue), and every query
 # guards it: ('__all' IN ($v) OR <column> IN ($v)). An empty variable then
-# never becomes IN (), and "All" never lists every value.
+# never becomes IN (), and "All" never lists every value. A single-value
+# variable is read as ${v:sqlstring}: Grafana inserts a plain $v unquoted.
 
 locals {
   cost_ds       = { type = "grafana-postgresql-datasource", uid = "cost" }
@@ -35,7 +36,7 @@ locals {
     for b, vars in local.cost_board_vars : b => join(" AND ", [
       for v in vars : try(v.multi, true)
       ? format("('__all' IN ($%s) OR %s IN ($%s))", v.name, v.column, v.name)
-      : format("%s IN ($%s)", v.column, v.name)
+      : format("%s = $${%s:sqlstring}", v.column, v.name)
     ])
   }
 

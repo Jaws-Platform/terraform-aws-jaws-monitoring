@@ -1265,6 +1265,29 @@ run "every_cost_filter_guards_all" {
   }
 }
 
+run "single_value_filters_are_quoted" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition = alltrue(flatten([for path, body in output.files : [
+      for p in jsondecode(body).panels : [
+        for t in try(p.targets, []) : [
+          for v in jsondecode(body).templating.list : v.multi || !strcontains(replace(t.rawSql, format("$${%s:sqlstring}", v.name), ""), format("$%s", v.name))
+        ]
+      ]
+    ] if startswith(path, "grafana/dashboards/Cost/")]))
+    error_message = "Grafana inserts a single-value variable unquoted: every query reads it as $${name:sqlstring}"
+  }
+}
+
 run "the_overview_needs_cost" {
   command = plan
 
