@@ -32,6 +32,37 @@ run "it_provisions_both_data_sources_and_prunes_removed_ones" {
   }
 }
 
+run "grafana_finds_every_provisioning_folder_it_reads" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = yamldecode(output.files["grafana/provisioning/plugins/plugins.yaml"]) == { apiVersion = 1, apps = [] }
+    error_message = "the node's provisioning mount hides the image's own folders; without plugins/ Grafana logs an error at every start"
+  }
+}
+
+run "dashboards_follow_their_files" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = yamldecode(output.files["grafana/provisioning/dashboards/dashboards.yaml"]).providers[0].disableDeletion == false
+    error_message = "a dashboard whose file is gone is deleted from Grafana (with disableDeletion it would stay)"
+  }
+
+  assert {
+    condition     = yamldecode(output.files["grafana/provisioning/dashboards/dashboards.yaml"]).providers[0].allowUiUpdates == false && yamldecode(output.files["grafana/provisioning/dashboards/dashboards.yaml"]).providers[0].options.foldersFromFilesStructure == true
+    error_message = "dashboards are read-only in the UI, and each lands in the folder its directory names"
+  }
+}
+
 run "extra_dashboards_and_rules_are_provisioned" {
   command = plan
 

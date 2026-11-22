@@ -38,10 +38,12 @@ locals {
   dashboard_providers = yamlencode({
     apiVersion = 1
     providers = [{
-      name                  = "monitoring"
-      orgId                 = 1
-      type                  = "file"
-      disableDeletion       = true
+      name  = "monitoring"
+      orgId = 1
+      type  = "file"
+      # A dashboard whose file is gone leaves Grafana too (the smoke test's
+      # phase 2 shows it would stay with this on).
+      disableDeletion       = false
       allowUiUpdates        = false
       updateIntervalSeconds = 60
       options               = { path = "/var/lib/grafana/dashboards", foldersFromFilesStructure = true }
@@ -63,6 +65,9 @@ locals {
     {
       "grafana/provisioning/datasources/datasources.yaml" = local.datasources
       "grafana/provisioning/dashboards/dashboards.yaml"   = local.dashboard_providers
+      # The node mounts this tree over the image's own, so every folder Grafana
+      # reads must exist; an empty plugins/ spares an error at every start.
+      "grafana/provisioning/plugins/plugins.yaml" = yamlencode({ apiVersion = 1, apps = [] })
     },
     { for path, json in local.dashboards : "grafana/dashboards/${path}" => json },
     { for path, doc in local.module_alerting : path => jsonencode(doc) },
