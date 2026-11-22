@@ -52,6 +52,8 @@ variable "cost" {
     providers = set(string)
     # The monitoring-node module passes its resolved value; 2 is the same default.
     anomaly_floor_usd = optional(number, 2)
+    # Likewise: the tag whose value names a Databricks workspace on AWS rows.
+    databricks_workspace_tag = optional(string, "Workspace")
   })
   default = null
 }

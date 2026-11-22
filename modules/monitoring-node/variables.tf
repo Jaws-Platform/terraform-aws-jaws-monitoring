@@ -230,7 +230,7 @@ variable "slack" {
 }
 
 variable "cost" {
-  description = "The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), the tags a task run's cost rows are joined on, monthly budgets in USD (total, per project, per account by id or name), and the anomaly floor (the day's spend must also be this many USD over its 14-day median). null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it."
+  description = "The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), the tags a task run's cost rows are joined on, monthly budgets in USD (total, per project, per account by id or name), the anomaly floor (the day's spend must also be this many USD over its 14-day median), and the tag whose value names a Databricks workspace on its AWS resources (the all-in cost; it must be an active cost allocation tag). null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it."
   type = object({
     bucket            = string
     normalized_prefix = optional(string, "normalized")
@@ -241,7 +241,8 @@ variable "cost" {
       projects = optional(map(number), {})
       accounts = optional(map(number), {})
     }), {})
-    anomaly_floor_usd = optional(number, 2)
+    anomaly_floor_usd        = optional(number, 2)
+    databricks_workspace_tag = optional(string, "Workspace")
   })
   default = null
 
@@ -275,5 +276,10 @@ variable "cost" {
   validation {
     condition     = var.cost == null ? true : var.cost.anomaly_floor_usd >= 0
     error_message = "cost.anomaly_floor_usd is at least 0."
+  }
+
+  validation {
+    condition     = var.cost == null ? true : can(regex("^[A-Za-z0-9 _.:/=+@-]{1,128}$", var.cost.databricks_workspace_tag))
+    error_message = "cost.databricks_workspace_tag is an AWS tag key: 1 to 128 letters, digits, spaces and _ . : / = + @ -."
   }
 }

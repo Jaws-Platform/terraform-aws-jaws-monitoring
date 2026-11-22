@@ -148,7 +148,7 @@ before="$(q 'select max(loaded_at) from cost.loads')"
 q "update cost.meta set value = '0' where name = 'schema_version'" > /dev/null
 sync || fail "a_schema_version_change_rebuilds: the run failed"
 expect rebuilt "reloaded outputs" "$(q "select count(*) from cost.loads where loaded_at > '$before'")" 2
-expect rebuilt "version" "$(q "select value from cost.meta where name = 'schema_version'")" 2
+expect rebuilt "version" "$(q "select value from cost.meta where name = 'schema_version'")" 3
 expect rebuilt "rows" "$(q 'select count(*) from cost.lines')" 1
 echo "cost sync (postgres): a_schema_version_change_rebuilds"
 
@@ -252,5 +252,103 @@ for view in cost.month_to_date cost.anomalies cost.untagged_new cost.as_of; do
   [ "$got" -lt 1000 ] || fail "the_model_reads_only_its_window: $view read $got rows of cost.lines"
 done
 echo "cost sync (postgres): the_model_reads_only_its_window"
+
+# ------------------------------------------------------- the cost views
+# Fresh tables and the views' rows (tests/cost_views_rows.sql).
+q 'truncate cost.lines, cost.run_events, cost.loads' > /dev/null
+docker exec -i "$container" psql -U monitoring -d cost -X -q -v ON_ERROR_STOP=1 < "$here/cost_views_rows.sql" > /dev/null
+views_config() { # [databricks workspace tag]
+  printf '{"bucket": "acme-billing", "prefix": "normalized", "providers": ["aws", "databricks"], "run_join_tags": ["RunId", "TaskId"], "databricks_workspace_tag": "%s"}' "${1:-Workspace}" \
+    > "$root/data/config/current/cost-sync/config.json"
+}
+views_config
+sync || fail "the cost views: the run failed"
+
+# the_daily_view_carries_the_component
+expect component "web-app on Nov 20" "$(at "$now" "select string_agg(component || '=' || billed_cost, ',' order by component) from cost.daily where project = 'web-app' and day = '2026-11-20'")" "api=1,site=2"
+echo "cost sync (postgres): the_daily_view_carries_the_component"
+
+# databricks_daily_names_products_and_counts_dbus
+expect databricks "ws-1" "$(at "$now" "select string_agg(concat_ws(' ', product, serverless, quantity, list_cost), ',' order by product) from cost.databricks_daily where workspace_id = 'ws-1'")" "ALL_PURPOSE f 4 2.2,JOBS t 10 3.5"
+echo "cost sync (postgres): databricks_daily_names_products_and_counts_dbus"
+
+# the_all_in_adds_the_workspaces_aws_rows_in_any_tag_key_form
+expect all_in "Nov 20" "$(at "$now" "select concat_ws(' ', round(databricks_cost::numeric, 2), round(aws_cost::numeric, 2), round(all_in_cost::numeric, 2)) from cost.databricks_all_in where workspace = 'braveheart-prod' and day = '2026-11-20'")" "5.70 1.50 7.20"
+expect all_in "Nov 19" "$(at "$now" "select concat_ws(' ', round(databricks_cost::numeric, 2), round(aws_cost::numeric, 2), round(all_in_cost::numeric, 2)) from cost.databricks_all_in where workspace = 'braveheart-prod' and day = '2026-11-19'")" "0.00 0.10 0.10"
+echo "cost sync (postgres): the_all_in_adds_the_workspaces_aws_rows_in_any_tag_key_form"
+
+# a_workspace_without_a_name_is_shown_by_its_id
+expect all_in_id "ws-2" "$(at "$now" "select concat_ws(' ', round(databricks_cost::numeric, 2), round(aws_cost::numeric, 2), round(all_in_cost::numeric, 2)) from cost.databricks_all_in where workspace = 'ws-2' and day = '2026-11-20'")" "1.00 0.00 1.00"
+echo "cost sync (postgres): a_workspace_without_a_name_is_shown_by_its_id"
+
+# the_workspace_tag_is_the_callers
+views_config DatabricksWorkspace
+sync || fail "the_workspace_tag_is_the_callers: the run failed"
+expect workspace_tag "AWS on Nov 20" "$(at "$now" "select round(aws_cost::numeric, 2) from cost.databricks_all_in where workspace = 'braveheart-prod' and day = '2026-11-20'")" 0.00
+views_config
+sync || fail "the_workspace_tag_is_the_callers: the run back failed"
+echo "cost sync (postgres): the_workspace_tag_is_the_callers"
+
+# a_run_matches_its_cost_rows_in_any_tag_key_form
+expect key_forms "billed per run" "$(at "$now" "select string_agg(round(billed_cost::numeric, 2)::text, ',' order by run_key) from cost.task_run_costs")" "4.80,1.70,0.00,16.00"
+echo "cost sync (postgres): a_run_matches_its_cost_rows_in_any_tag_key_form"
+
+# a_finished_run_shows_its_bill
+expect finished "R1" "$(at "$now" "select concat_ws(' ', source, outcome, estimated, round(cost::numeric, 2), hours, gpu_hours, round(on_demand_cost::numeric, 2), round(ceiling_percent::numeric, 2), round(cost_per_gpu_hour::numeric, 2), pr, commit) from cost.runs where run_key = 'RunId=100-1;TaskId=net-v12'")" "record passed f 4.80 5 5 10.00 9.60 0.96 #88 a1b2c3d"
+echo "cost sync (postgres): a_finished_run_shows_its_bill"
+
+# a_run_is_estimated_until_its_last_day_is_complete
+expect estimated "R2 now" "$(at "$now" "select concat_ws(' ', estimated, round(cost::numeric, 2), round(billed_cost::numeric, 2)) from cost.runs where run_key = 'RunId=101-1;TaskId=net-v12'")" "t 2.00 1.70"
+expect estimated "R2 later" "$(at '2026-11-23T12:00:00Z' "select concat_ws(' ', estimated, round(cost::numeric, 2), round(billed_cost::numeric, 2)) from cost.runs where run_key = 'RunId=101-1;TaskId=net-v12'")" "f 1.70 1.70"
+echo "cost sync (postgres): a_run_is_estimated_until_its_last_day_is_complete"
+
+# a_running_run_is_estimated_to_now
+expect running "R3" "$(at "$now" "select concat_ws(' ', outcome, estimated, hours, round(cost::numeric, 2), gpu_hours, coalesce(cost_per_gpu_hour::text, 'null')) from cost.runs where run_key = 'RunId=102-1;TaskId=datagen'")" "running t 6 3.00 0 null"
+echo "cost sync (postgres): a_running_run_is_estimated_to_now"
+
+# a_swept_run_ends_when_it_was_swept
+expect swept "R4" "$(at "$now" "select concat_ws(' ', outcome, ended_at, hours, round(cost::numeric, 2), round(ceiling_percent::numeric, 2)) from cost.runs where run_key = 'RunId=103-1;TaskId=probe'")" "swept 2026-11-10 08:00:00+00 8 16.00 80.00"
+echo "cost sync (postgres): a_swept_run_ends_when_it_was_swept"
+
+# a_run_without_a_record_is_built_from_its_tags
+expect tag_only "R5" "$(at "$now" "select concat_ws(' ', source, workflow, profile, campaign, hours, round(cost::numeric, 2)) from cost.runs where run_key = 'RunId=99-1;TaskId=old'")" "tags train gpu net-v11 3.5 7.00"
+echo "cost sync (postgres): a_run_without_a_record_is_built_from_its_tags"
+
+# a_recorded_run_appears_once
+expect once "R1" "$(at "$now" "select count(*) from cost.runs where run_key = 'RunId=100-1;TaskId=net-v12'")" 1
+expect once "all runs" "$(at "$now" "select count(*) from cost.runs")" 5
+echo "cost sync (postgres): a_recorded_run_appears_once"
+
+# campaigns_add_up_their_runs
+expect campaigns "net-v12" "$(at "$now" "select concat_ws(' ', project, runs, passed, failed, interrupted, instance_hours, gpu_hours, round(cost::numeric, 2), round(on_demand_cost::numeric, 2), round(saved::numeric, 2), round(saved_percent::numeric, 2), round(cost_per_passed_run::numeric, 2)) from cost.campaigns where campaign = 'net-v12'")" "braveheart-trainer 2 1 0 1 7 7 6.80 14.00 7.20 51.43 6.80"
+expect campaigns "net-v11" "$(at "$now" "select coalesce(cost_per_passed_run::text, 'null') from cost.campaigns where campaign = 'net-v11'")" null
+echo "cost sync (postgres): campaigns_add_up_their_runs"
+
+# the_task_views_scan_cost_lines_once: 300 more recorded runs, each with a cost
+# row. Every scan of cost.lines behind cost.runs runs once, not once per run.
+docker exec -i "$container" psql -U monitoring -d cost -X -q -v ON_ERROR_STOP=1 > /dev/null << 'SQL'
+INSERT INTO cost.run_events (key, period, run_key, tags, event, at, project, kind, hourly_usd)
+SELECT 'test/scale', '2026-11', 'RunId=' || n || '-1;TaskId=scale', jsonb_build_object('RunId', n || '-1', 'TaskId', 'scale'),
+       'started', '2026-11-12T00:00:00Z', 'scale', 'train', 1.0
+FROM generate_series(1000, 1299) AS n;
+INSERT INTO cost.lines (key, provider, period, provider_name, sub_account_id, charge_period_start, charge_category,
+                        service_name, billed_cost, tags)
+SELECT 'test/scale', 'aws', '2026-11', 'AWS', '570327089884', '2026-11-12T00:00:00Z', 'Usage', 'Amazon Elastic Compute Cloud',
+       1, jsonb_build_object('RunId', n || '-1', 'TaskId', 'scale')
+FROM generate_series(1000, 1299) AS n;
+ANALYZE cost.lines;
+ANALYZE cost.run_events;
+SQL
+loops="$(at "$now" "CREATE FUNCTION pg_temp.lines_loops(q text) RETURNS bigint LANGUAGE plpgsql AS \$\$
+DECLARE plan jsonb;
+BEGIN
+  EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || q INTO plan;
+  RETURN (SELECT max((n->>'Actual Loops')::bigint) FROM jsonb_path_query(plan, 'strict \$.**') AS n
+          WHERE jsonb_typeof(n) = 'object' AND n->>'Relation Name' = 'lines');
+END \$\$;
+SELECT pg_temp.lines_loops('SELECT * FROM cost.runs');")"
+[ "$loops" = 1 ] || fail "the_task_views_scan_cost_lines_once: cost.lines is scanned $loops times"
+expect scale "runs" "$(at "$now" "select count(*) from cost.runs where project = 'scale' and billed_cost = 1")" 300
+echo "cost sync (postgres): the_task_views_scan_cost_lines_once"
 
 echo "cost sync (postgres): OK"

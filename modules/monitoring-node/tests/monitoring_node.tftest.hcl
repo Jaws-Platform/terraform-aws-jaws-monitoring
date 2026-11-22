@@ -669,7 +669,7 @@ run "with_cost_the_bundle_configures_cost_sync" {
   }
 
   assert {
-    condition     = jsonencode(jsondecode(local.bundle.files["cost-sync/config.json"])) == jsonencode({ bucket = "acme-billing", budgets = { accounts = {}, projects = {}, total = null }, prefix = "normalized", providers = ["aws", "databricks"], run_join_tags = ["RunId", "TaskId"] })
+    condition     = jsonencode(jsondecode(local.bundle.files["cost-sync/config.json"])) == jsonencode({ bucket = "acme-billing", budgets = { accounts = {}, projects = {}, total = null }, prefix = "normalized", databricks_workspace_tag = "Workspace", providers = ["aws", "databricks"], run_join_tags = ["RunId", "TaskId"] })
     error_message = "cost-sync reads its bucket, prefix, providers and join tags from the bundle"
   }
 
@@ -756,6 +756,16 @@ run "rejects_a_negative_anomaly_floor" {
 
   variables {
     cost = { bucket = "acme-billing", anomaly_floor_usd = -1 }
+  }
+
+  expect_failures = [var.cost]
+}
+
+run "rejects_a_workspace_tag_with_a_comma" {
+  command = plan
+
+  variables {
+    cost = { bucket = "acme-billing", databricks_workspace_tag = "Workspace,Name" }
   }
 
   expect_failures = [var.cost]

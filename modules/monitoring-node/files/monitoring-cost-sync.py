@@ -45,7 +45,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-COST_SCHEMA_VERSION = "2"
+COST_SCHEMA_VERSION = "3"
 DEFAULT_PSQL = "docker exec -i monitoring-postgres-1 psql -U monitoring -v ON_ERROR_STOP=1"
 DEFAULT_TEXTFILE_DIR = "/var/lib/node_exporter/textfile"
 METRICS_FILE = "cost_sync.prom"
@@ -129,12 +129,153 @@ def write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def schema_sql(join_tags: List[str]) -> str:
+def tag_forms(key: str) -> List[str]:
+    """The three ways FOCUS may write a user-defined tag's key (AWS doesn't
+    document which), in the normalizer's order; cost.tag() reads the same."""
+    return [key, "user:" + key, "user_" + key.lower()]
+
+
+def databricks_sql(workspace_tag: str) -> str:
+    """Databricks per day at list price, and each workspace's all-in cost: its
+    Databricks list cost plus the AWS rows whose workspace tag names it."""
+    keys = "array[" + ", ".join(lit(k) for k in tag_forms(workspace_tag)) + "]"
+    return f"""
+CREATE OR REPLACE VIEW cost.databricks_daily AS
+SELECT day, sub_account_id AS workspace_id, coalesce(sub_account_name, sub_account_id) AS workspace,
+       regexp_replace(coalesce(service_name, ''), '^Databricks ', '') AS product, sku_id AS sku,
+       coalesce(serverless, false) AS serverless, project, consumed_unit AS unit,
+       sum(consumed_quantity) AS quantity, sum(billed_cost) AS list_cost
+FROM cost.lines
+WHERE provider = 'databricks' AND day <= cost.today()
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
+
+-- The AWS side is found through the tags index (?| over the key's three forms):
+-- classic clusters' EC2 and EBS, and anything else tagged with the workspace.
+CREATE OR REPLACE VIEW cost.databricks_all_in AS
+WITH d AS (
+  SELECT day, coalesce(sub_account_name, sub_account_id) AS workspace, billed_cost AS dbx, 0::double precision AS aws
+  FROM cost.lines WHERE provider = 'databricks' AND day <= cost.today()
+  UNION ALL
+  SELECT day, cost.tag(tags, {lit(workspace_tag)}), 0, billed_cost
+  FROM cost.lines WHERE provider = 'aws' AND tags ?| {keys} AND day <= cost.today()
+)
+SELECT day, workspace, sum(dbx) AS databricks_cost, sum(aws) AS aws_cost, sum(dbx) + sum(aws) AS all_in_cost
+FROM d WHERE workspace IS NOT NULL
+GROUP BY day, workspace;
+"""
+
+
+def tasks_sql(join_tags: List[str]) -> str:
+    """Task runs: one row per run from its events, its bill (the cost rows
+    carrying its join tags, in any of FOCUS's key forms), and the cost model's
+    runs and campaigns. Runs with no record are built from tagged cost rows."""
+    join = ", ".join(f"{lit(tag)}, s.tags->>{lit(tag)}" for tag in join_tags)
+    record_key = " || ';' || ".join(f"{lit(t + '=')} || (s.tags->>{lit(t)})" for t in join_tags)
+    first = "array[" + ", ".join(lit(k) for k in tag_forms(join_tags[0])) + "]"
+    every = " AND ".join(f"cost.tag(l.tags, {lit(t)}) IS NOT NULL" for t in join_tags)
+    key = " || ';' || ".join(f"{lit(t + '=')} || cost.tag(l.tags, {lit(t)})" for t in join_tags)
+    return f"""
+-- One row per run: its started event, and how it ended.
+CREATE OR REPLACE VIEW cost.task_runs AS
+WITH s AS (SELECT DISTINCT ON (run_key) * FROM cost.run_events WHERE event = 'started' ORDER BY run_key, at),
+     f AS (SELECT DISTINCT ON (run_key) run_key, at, outcome, exit_code, interrupted_at FROM cost.run_events
+           WHERE event = 'finished' ORDER BY run_key, at DESC),
+     w AS (SELECT DISTINCT ON (run_key) run_key, at, reason FROM cost.run_events WHERE event = 'swept' ORDER BY run_key, at DESC)
+SELECT s.run_key, s.tags, jsonb_build_object({join}) AS join_tags, s.project, s.campaign, s.kind,
+       s.instance_type, s.accelerators, s.market, s.zone, s.instance_id, s.hourly_usd, s.on_demand_hourly_usd,
+       s.worst_case_usd, s.ceiling_usd, s.max_hours, s.links, s.attributes, s.at AS started_at,
+       coalesce(f.at, w.at) AS ended_at,
+       CASE WHEN f.run_key IS NOT NULL THEN f.outcome WHEN w.run_key IS NOT NULL THEN 'swept' END AS outcome,
+       f.exit_code, f.interrupted_at, w.reason AS swept_reason,
+       {record_key} AS cost_key
+FROM s LEFT JOIN f USING (run_key) LEFT JOIN w USING (run_key);
+
+-- The tagged cost rows, once, by the run their join tags name (in any of the
+-- three key forms): one pass through the tags index, however many runs.
+CREATE OR REPLACE VIEW cost.run_lines AS
+SELECT {key} AS run_key, sum(l.billed_cost) AS billed_cost, count(*) AS lines,
+       max(coalesce(l.project, cost.tag(l.tags, 'Project'))) AS project, max(cost.tag(l.tags, 'Campaign')) AS campaign,
+       max(cost.tag(l.tags, 'Workflow')) AS workflow, max(cost.tag(l.tags, 'Profile')) AS profile,
+       max(cost.tag(l.tags, 'Lifecycle')) AS lifecycle,
+       max(cost.tag(l.tags, 'TaskId')) AS task, max(cost.tag(l.tags, 'RunId')) AS run_id,
+       min(l.charge_period_start) AS started_at, max(l.charge_period_end) AS ended_at,
+       sum(l.consumed_quantity) FILTER (WHERE lower(l.consumed_unit) IN ('hrs', 'hours', 'hour')) AS hours
+FROM cost.lines l
+WHERE l.tags ?| {first} AND {every}
+GROUP BY 1;
+
+-- A run's billed cost: its tagged cost rows.
+CREATE OR REPLACE VIEW cost.task_run_costs AS
+SELECT r.run_key, coalesce(x.billed_cost, 0) AS billed_cost, coalesce(x.lines, 0) AS lines
+FROM cost.task_runs r LEFT JOIN cost.run_lines x ON x.run_key = r.cost_key;
+
+-- One row per run: recorded runs, and runs known only from tagged cost rows
+-- (before records existed, or when one failed to write). Until a run's last day
+-- is complete, its cost is an estimate: its hours at the hourly price paid.
+CREATE OR REPLACE VIEW cost.runs AS
+WITH rl AS (SELECT * FROM cost.run_lines), recorded AS (
+  SELECT r.run_key, 'record'::text AS source, r.project, r.campaign, r.kind AS workflow,
+         r.attributes->>'profile' AS profile, r.attributes->>'lifecycle' AS lifecycle,
+         cost.tag(r.tags, 'TaskId') AS task, cost.tag(r.tags, 'RunId') AS run_id,
+         r.instance_type, r.accelerators, r.market, r.zone, r.instance_id,
+         r.started_at, r.ended_at, r.ended_at IS NULL AS running,
+         (extract(epoch FROM coalesce(r.ended_at, cost.now()) - r.started_at) / 3600)::double precision AS hours,
+         coalesce(r.outcome, CASE WHEN r.ended_at IS NULL THEN 'running' END) AS outcome,
+         coalesce(x.billed_cost, 0) AS billed_cost, coalesce(x.lines, 0) AS lines,
+         r.hourly_usd, r.on_demand_hourly_usd, r.ceiling_usd, r.max_hours,
+         r.links->>'run' AS run_url, r.links->>'pr' AS pr_url, r.links->>'commit' AS commit_url
+  FROM cost.task_runs r LEFT JOIN rl x ON x.run_key = r.cost_key
+), tagged AS (
+  SELECT x.run_key, 'tags'::text AS source, x.project, x.campaign, x.workflow, x.profile, x.lifecycle, x.task, x.run_id,
+         NULL::text AS instance_type, NULL::integer AS accelerators, NULL::text AS market, NULL::text AS zone,
+         NULL::text AS instance_id, x.started_at, x.ended_at, false AS running, x.hours,
+         NULL::text AS outcome, x.billed_cost, x.lines,
+         NULL::double precision AS hourly_usd, NULL::double precision AS on_demand_hourly_usd,
+         NULL::double precision AS ceiling_usd, NULL::double precision AS max_hours,
+         NULL::text AS run_url, NULL::text AS pr_url, NULL::text AS commit_url
+  FROM rl x
+  WHERE NOT EXISTS (SELECT 1 FROM cost.task_runs t WHERE t.cost_key = x.run_key)
+), e AS (
+  SELECT x.*, (x.hourly_usd IS NOT NULL AND (x.running OR x.lines = 0
+               OR (x.ended_at AT TIME ZONE 'UTC')::date > cost.last_complete())) AS estimated
+  FROM (SELECT * FROM recorded UNION ALL SELECT * FROM tagged) x
+), c AS (
+  SELECT e.*, CASE WHEN e.estimated THEN e.hours * e.hourly_usd ELSE e.billed_cost END AS cost FROM e
+)
+SELECT run_key, source, project, campaign, workflow, profile, lifecycle, task, run_id,
+       instance_type, accelerators, market, zone, instance_id, started_at, ended_at, running, hours, outcome,
+       billed_cost, estimated, cost, hourly_usd, on_demand_hourly_usd, ceiling_usd, max_hours,
+       hours * on_demand_hourly_usd AS on_demand_cost,
+       100 * cost / nullif(ceiling_usd, 0) AS ceiling_percent,
+       hours * accelerators AS gpu_hours,
+       cost / nullif(hours * accelerators, 0) AS cost_per_gpu_hour,
+       run_url, pr_url, commit_url,
+       '#' || substring(pr_url FROM '[^/]+$') AS pr,
+       left(substring(commit_url FROM '[^/]+$'), 7) AS commit
+FROM c;
+
+-- Campaigns: a set of runs toward one goal, by their campaign slug.
+CREATE OR REPLACE VIEW cost.campaigns AS
+SELECT campaign, project, min(started_at) AS first_run, max(started_at) AS last_run, count(*) AS runs,
+       count(*) FILTER (WHERE outcome = 'passed') AS passed,
+       count(*) FILTER (WHERE outcome = 'failed') AS failed,
+       count(*) FILTER (WHERE outcome = 'interrupted') AS interrupted,
+       sum(hours) AS instance_hours, sum(gpu_hours) AS gpu_hours, sum(cost) AS cost,
+       sum(on_demand_cost) AS on_demand_cost,
+       sum(on_demand_cost - cost) FILTER (WHERE on_demand_cost IS NOT NULL) AS saved,
+       100 * sum(on_demand_cost - cost) FILTER (WHERE on_demand_cost IS NOT NULL) / nullif(sum(on_demand_cost), 0) AS saved_percent,
+       sum(cost) / nullif(count(*) FILTER (WHERE outcome = 'passed'), 0) AS cost_per_passed_run
+FROM cost.runs
+WHERE campaign IS NOT NULL
+GROUP BY campaign, project;
+"""
+
+
+def schema_sql(join_tags: List[str], workspace_tag: str = "Workspace") -> str:
     def table(name: str, leading: List[str], columns, trailing: tuple = ()) -> str:
         return (f"CREATE TABLE IF NOT EXISTS cost.{name} "
                 f"({', '.join(leading + [f'{c} {t}' for _, c, t in columns] + list(trailing))});\n")
 
-    join = ", ".join(f"{lit(tag)}, s.tags->>{lit(tag)}" for tag in join_tags)
     return (
         "CREATE TABLE IF NOT EXISTS cost.loads (key text PRIMARY KEY, kind text NOT NULL, provider text, "
         "period text NOT NULL, etag text NOT NULL, last_modified timestamptz NOT NULL, rows integer NOT NULL, "
@@ -150,24 +291,9 @@ def schema_sql(join_tags: List[str]) -> str:
         "CREATE INDEX IF NOT EXISTS run_events_run ON cost.run_events (run_key);\n"
         "CREATE TABLE IF NOT EXISTS cost.normalizer_runs (started_at timestamptz PRIMARY KEY, ended_at timestamptz, "
         "status text NOT NULL, errors integer NOT NULL, warnings integer NOT NULL, record jsonb NOT NULL);\n"
-        # One row per run: its started event, and how it ended.
-        "CREATE OR REPLACE VIEW cost.task_runs AS\n"
-        "WITH s AS (SELECT DISTINCT ON (run_key) * FROM cost.run_events WHERE event = 'started' ORDER BY run_key, at),\n"
-        "     f AS (SELECT DISTINCT ON (run_key) run_key, at, outcome, exit_code, interrupted_at FROM cost.run_events\n"
-        "           WHERE event = 'finished' ORDER BY run_key, at DESC),\n"
-        "     w AS (SELECT DISTINCT ON (run_key) run_key, at, reason FROM cost.run_events WHERE event = 'swept' ORDER BY run_key, at DESC)\n"
-        f"SELECT s.run_key, s.tags, jsonb_build_object({join}) AS join_tags, s.project, s.campaign, s.kind,\n"
-        "       s.instance_type, s.accelerators, s.market, s.zone, s.instance_id, s.hourly_usd, s.on_demand_hourly_usd,\n"
-        "       s.worst_case_usd, s.ceiling_usd, s.max_hours, s.links, s.attributes, s.at AS started_at,\n"
-        "       coalesce(f.at, w.at) AS ended_at,\n"
-        "       CASE WHEN f.run_key IS NOT NULL THEN f.outcome WHEN w.run_key IS NOT NULL THEN 'swept' END AS outcome,\n"
-        "       f.exit_code, f.interrupted_at, w.reason AS swept_reason\n"
-        "FROM s LEFT JOIN f USING (run_key) LEFT JOIN w USING (run_key);\n"
-        # A run's billed cost: the cost rows that carry its join tags.
-        "CREATE OR REPLACE VIEW cost.task_run_costs AS\n"
-        "SELECT r.run_key, coalesce(sum(l.billed_cost), 0) AS billed_cost, count(l.key) AS lines\n"
-        "FROM cost.task_runs r LEFT JOIN cost.lines l ON l.tags @> r.join_tags GROUP BY r.run_key;\n"
         + MODEL_SQL
+        + tasks_sql(join_tags)
+        + databricks_sql(workspace_tag)
         + "GRANT CONNECT ON DATABASE cost TO cost_reader;\n"
         "GRANT USAGE ON SCHEMA cost TO cost_reader;\n"
         "GRANT SELECT ON ALL TABLES IN SCHEMA cost TO cost_reader;\n"
@@ -185,6 +311,9 @@ def schema_sql(join_tags: List[str]) -> str:
 MODEL_SQL = """
 CREATE OR REPLACE FUNCTION cost.now() RETURNS timestamptz LANGUAGE sql STABLE AS
 $$ SELECT coalesce(nullif(current_setting('cost.now', true), '')::timestamptz, now()) $$;
+-- A tag's value, whichever of FOCUS's three key forms it was written in.
+CREATE OR REPLACE FUNCTION cost.tag(tags jsonb, key text) RETURNS text LANGUAGE sql IMMUTABLE AS
+$$ SELECT coalesce(tags->>key, tags->>('user:' || key), tags->>('user_' || lower(key))) $$;
 -- Stable, so a view's window on day is pushed down to the lines_day index.
 CREATE OR REPLACE FUNCTION cost.today() RETURNS date LANGUAGE sql STABLE AS
 $$ SELECT (cost.now() AT TIME ZONE 'UTC')::date $$;
@@ -202,12 +331,12 @@ CREATE TABLE IF NOT EXISTS cost.budgets (scope text NOT NULL, name text NOT NULL
 CREATE OR REPLACE VIEW cost.daily AS
 SELECT day, day <= cost.last_complete() AS complete, long_period,
        provider, sub_account_id AS account_id, sub_account_name AS account_name,
-       coalesce(project, '(untagged)') AS project, environment, service_name AS service, charge_category,
+       coalesce(project, '(untagged)') AS project, environment, component, service_name AS service, charge_category,
        sum(billed_cost) AS billed_cost
 FROM cost.lines
 WHERE day <= cost.today()
 GROUP BY day, long_period, provider, sub_account_id, sub_account_name, coalesce(project, '(untagged)'),
-         environment, service_name, charge_category;
+         environment, component, service_name, charge_category;
 
 CREATE OR REPLACE VIEW cost.as_of AS
 SELECT max(day) AS day FROM cost.lines WHERE day <= cost.last_complete();
@@ -396,7 +525,8 @@ class CostSync:
             print(f"monitoring-cost-sync: schema {version} -> {COST_SCHEMA_VERSION}, rebuilding", file=sys.stderr)
             rebuild = ("DROP SCHEMA cost CASCADE;\nCREATE SCHEMA cost;\n"
                        "CREATE TABLE cost.meta (name text PRIMARY KEY, value text NOT NULL);\n")
-        self.psql("cost", "BEGIN;\n" + rebuild + schema_sql(config["run_join_tags"]) + "COMMIT;\n")
+        self.psql("cost", "BEGIN;\n" + rebuild + schema_sql(config["run_join_tags"], config.get("databricks_workspace_tag") or "Workspace")
+                  + "COMMIT;\n")
 
     def write_budgets(self, config: dict) -> None:
         """Rewrite cost.budgets from the bundle: what isn't there any more goes."""

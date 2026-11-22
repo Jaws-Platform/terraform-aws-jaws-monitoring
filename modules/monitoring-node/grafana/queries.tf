@@ -45,6 +45,7 @@ locals {
   burstable           = local.credits_max != null
   served              = var.domain != null
   cost_on             = var.cost != null
+  databricks_on       = var.cost != null && contains(try(var.cost.providers, []), "databricks")
   cost_providers      = local.cost_on ? var.cost.providers : toset([])
 
   # The CloudWatch query for the credit balance (panel and rule).

@@ -47,7 +47,7 @@ FAKE_PSQL = textwrap.dedent(r'''
             loaded.pop(key, None)
     json.dump(loaded, open(state, "w"))
     if "SELECT value FROM cost.meta" in stream:
-        print("2")
+        print("3")
     elif "SELECT key || ' ' || etag" in stream:
         print("\n".join(f"{k} {v}" for k, v in loaded.items()))
     elif "SELECT json_build_object" in stream:
