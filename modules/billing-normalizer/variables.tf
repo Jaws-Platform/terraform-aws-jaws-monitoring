@@ -16,6 +16,7 @@ variable "bucket_name" {
 variable "normalized_prefix" {
   description = "Where the normalized layer is written: `billing-bucket`'s `normalized_prefix`. No leading or trailing slash."
   type        = string
+  nullable    = false
   default     = "normalized"
 
   validation {
@@ -31,6 +32,7 @@ variable "promoted_tags" {
     `user_<tag lowercased>`. Changing the list rebuilds every output.
   EOT
   type        = list(string)
+  nullable    = false
   default     = ["Project", "Component", "Environment"]
 
   validation {
@@ -106,6 +108,7 @@ variable "runs" {
 variable "schedule_expression" {
   description = "How often the normalizer runs, as an EventBridge Scheduler expression. A run with nothing new to read only writes its run record."
   type        = string
+  nullable    = false
   default     = "rate(1 hour)"
 }
 
@@ -124,6 +127,7 @@ variable "memory_size" {
     row at peak; raise it when a billing period reaches about 150,000 rows.
   EOT
   type        = number
+  nullable    = false
   default     = 1024
 
   validation {
@@ -135,6 +139,7 @@ variable "memory_size" {
 variable "log_retention_days" {
   description = "Retention of the function's CloudWatch log group, in days."
   type        = number
+  nullable    = false
   default     = 30
 
   validation {
