@@ -45,6 +45,24 @@ locals {
         Resource = "*"
       },
     ],
+    # With cost: the normalized layer of the billing bucket, and nothing else in it.
+    [
+      for s in [
+        {
+          Sid      = "ReadNormalizedCost"
+          Effect   = "Allow"
+          Action   = "s3:GetObject"
+          Resource = "arn:aws:s3:::${try(var.cost.bucket, "")}/${try(var.cost.normalized_prefix, "")}/*"
+        },
+        {
+          Sid       = "ListNormalizedCost"
+          Effect    = "Allow"
+          Action    = "s3:ListBucket"
+          Resource  = "arn:aws:s3:::${try(var.cost.bucket, "")}"
+          Condition = { StringLike = { "s3:prefix" = ["${try(var.cost.normalized_prefix, "")}/*"] } }
+        },
+      ] : s if var.cost != null
+    ],
     var.domain == null ? [] : [
       {
         Sid      = "UpdateItsDnsRecord"

@@ -84,6 +84,7 @@ locals {
       "blackbox/blackbox.yml" = local.blackbox_config
     } : {},
     module.grafana.files,
+    local.cost_sync_files,
   )
 
   # What each service mounts, hashed into its label so `compose up -d`
@@ -135,6 +136,8 @@ locals {
             },
             # Each Slack webhook, for the contact points to expand.
             { for env in keys(local.slack_secrets) : env => "$${${env}:?}" },
+            # The cost database's read-only user, for the Cost data source.
+            { for env in(local.cost_on ? ["COST_READER_PASSWORD"] : []) : env => "$${${env}:?}" },
           )
           volumes = [
             "/data/config/current/grafana/provisioning:/etc/grafana/provisioning:ro",
@@ -239,7 +242,7 @@ locals {
       },
       local.slack_secrets,
     )
-    generated = ["POSTGRES_PASSWORD"]
+    generated = concat(["POSTGRES_PASSWORD"], local.cost_on ? ["COST_READER_PASSWORD"] : [])
   }
 
   bundle_json = jsonencode(local.bundle)

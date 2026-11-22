@@ -56,9 +56,9 @@ locals {
     delete_rules = !can(doc.deleteRules) || (!can(keys(doc.deleteRules)) && can([for d in doc.deleteRules : keys(d)]))
   } }
 
-  seconds    = { s = 1, m = 60, h = 3600, d = 86400 }
-  extra_path = "grafana/provisioning/alerting/rules-extra-"
-  host_uids  = [for x in local.host_rule_instances : x.uid]
+  seconds     = { s = 1, m = 60, h = 3600, d = 86400 }
+  extra_path  = "grafana/provisioning/alerting/rules-extra-"
+  module_uids = [for x in local.rule_instances : x.uid]
 
   # Dashboard uid => its panel ids, rows' nested panels included.
   dashboard_panels = {
@@ -85,7 +85,7 @@ locals {
     [for x in local.rules : "${x.where}: a uid is at most 40 letters, digits, - or _" if x.uid != "" && !can(regex("^[A-Za-z0-9_-]{1,40}$", x.uid))],
 
     [for uid, paths in { for x in local.rules : x.uid => x.where... if x.uid != "" } : "rule uid ${uid} is defined more than once: ${join(", ", paths)}" if length(paths) > 1],
-    [for x in local.rules : "${x.where}: that uid belongs to the host rules (which may be deleting it); pick another" if startswith(x.where, local.extra_path) && contains(local.host_uids, x.uid)],
+    [for x in local.rules : "${x.where}: that uid belongs to the module's own rules (which may be deleting it); pick another" if startswith(x.where, local.extra_path) && contains(local.module_uids, x.uid)],
 
     [for x in local.rules : "${x.where}: for must be a duration like 2m or 1h30m; Grafana exits at startup otherwise" if can(x.rule.for) && !can(regex("^([0-9]+(ms|s|m|h|d|w|y))+$", tostring(x.rule.for)))],
     [for x in local.rules : "${x.where}: noDataState must be OK, NoData, Alerting or KeepLast" if can(x.rule.noDataState) && !contains(["OK", "NoData", "Alerting", "KeepLast"], try(tostring(x.rule.noDataState), "-"))],

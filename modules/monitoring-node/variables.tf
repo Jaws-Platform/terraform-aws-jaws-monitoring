@@ -142,27 +142,32 @@ variable "extra_alert_rules" {
 variable "thresholds" {
   description = "Alert thresholds, which also set the dashboard's tile colours and dashed lines. Every attribute is optional and defaults to spec 6.8's numbers. Percentages are of the resource; cpu_credits_percent is of the instance type's maximum balance; container_restarts counts restarts in 15 minutes; the *_days are days. prometheus_history_days warns only while Prometheus is above prometheus_size_percent of its size cap, i.e. when the cap is costing history."
   type = object({
-    cpu_percent             = optional(object({ warning = number, critical = number }), { warning = 60, critical = 85 })
-    cpu_credits_percent     = optional(object({ warning = number, critical = number }), { warning = 25, critical = 5 })
-    memory_percent          = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })
-    swap_percent            = optional(object({ warning = number, critical = number }), { warning = 25, critical = 75 })
-    disk_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })
-    disk_full_days          = optional(object({ warning = number, critical = number }), { warning = 7, critical = 2 })
-    inodes_percent          = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })
-    prometheus_size_percent = optional(object({ warning = number }), { warning = 85 })
-    prometheus_history_days = optional(object({ warning = number }), { warning = 90 })
-    container_restarts      = optional(object({ warning = number, critical = number }), { warning = 1, critical = 3 })
-    tls_days                = optional(object({ warning = number, critical = number }), { warning = 14, critical = 3 })
-    os_release_update_days  = optional(object({ warning = number }), { warning = 7 })
+    cpu_percent               = optional(object({ warning = number, critical = number }), { warning = 60, critical = 85 })
+    cpu_credits_percent       = optional(object({ warning = number, critical = number }), { warning = 25, critical = 5 })
+    memory_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })
+    swap_percent              = optional(object({ warning = number, critical = number }), { warning = 25, critical = 75 })
+    disk_percent              = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })
+    disk_full_days            = optional(object({ warning = number, critical = number }), { warning = 7, critical = 2 })
+    inodes_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })
+    prometheus_size_percent   = optional(object({ warning = number }), { warning = 85 })
+    prometheus_history_days   = optional(object({ warning = number }), { warning = 90 })
+    container_restarts        = optional(object({ warning = number, critical = number }), { warning = 1, critical = 3 })
+    tls_days                  = optional(object({ warning = number, critical = number }), { warning = 14, critical = 3 })
+    os_release_update_days    = optional(object({ warning = number }), { warning = 7 })
+    normalizer_hours          = optional(object({ warning = number, critical = number }), { warning = 3, critical = 12 })
+    aws_charge_days           = optional(object({ warning = number, critical = number }), { warning = 3, critical = 5 })
+    databricks_delivery_hours = optional(object({ warning = number, critical = number }), { warning = 36, critical = 60 })
+    cost_sync_hours           = optional(object({ warning = number, critical = number }), { warning = 2, critical = 6 })
   })
   default = {}
 
   validation {
     condition = alltrue([
-      for t in [var.thresholds.cpu_percent, var.thresholds.memory_percent, var.thresholds.swap_percent, var.thresholds.disk_percent, var.thresholds.inodes_percent, var.thresholds.container_restarts] :
+      for t in [var.thresholds.cpu_percent, var.thresholds.memory_percent, var.thresholds.swap_percent, var.thresholds.disk_percent, var.thresholds.inodes_percent, var.thresholds.container_restarts,
+      var.thresholds.normalizer_hours, var.thresholds.aws_charge_days, var.thresholds.databricks_delivery_hours, var.thresholds.cost_sync_hours] :
       t.warning < t.critical
     ])
-    error_message = "For cpu, memory, swap, disk, inodes and container_restarts, higher is worse: warning must be below critical."
+    error_message = "For cpu, memory, swap, disk, inodes, container_restarts and the pipeline thresholds, higher is worse: warning must be below critical."
   }
 
   validation {
@@ -214,5 +219,36 @@ variable "slack" {
   validation {
     condition     = var.slack == null ? true : alltrue([for c in values(var.slack.routes) : contains(keys(var.slack.channels), c)])
     error_message = "Every slack route names one of slack.channels."
+  }
+}
+
+variable "cost" {
+  description = "The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), and the tags a task run's cost rows are joined on. null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it."
+  type = object({
+    bucket            = string
+    normalized_prefix = optional(string, "normalized")
+    providers         = optional(set(string), ["aws", "databricks"])
+    run_join_tags     = optional(list(string), ["RunId", "TaskId"])
+  })
+  default = null
+
+  validation {
+    condition     = var.cost == null ? true : can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.cost.bucket))
+    error_message = "cost.bucket is an S3 bucket name."
+  }
+
+  validation {
+    condition     = var.cost == null ? true : can(regex("^[^/](.*[^/])?$", var.cost.normalized_prefix))
+    error_message = "cost.normalized_prefix has no leading or trailing /."
+  }
+
+  validation {
+    condition     = var.cost == null ? true : length(var.cost.providers) > 0 && alltrue([for p in var.cost.providers : contains(["aws", "databricks"], p)])
+    error_message = "cost.providers is aws, databricks or both."
+  }
+
+  validation {
+    condition     = var.cost == null ? true : length(var.cost.run_join_tags) > 0
+    error_message = "cost.run_join_tags names at least one tag."
   }
 }

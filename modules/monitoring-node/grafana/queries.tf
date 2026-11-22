@@ -24,6 +24,15 @@ locals {
     tls_days       = "(probe_ssl_earliest_cert_expiry - time()) / 86400"
     eval_failures  = "sum(increase(grafana_alerting_rule_evaluation_failures_total[10m]))"
     os_update_days = "(time() - monitoring_os_release_update_since_seconds) / 86400 and monitoring_os_release_update_available == 1"
+
+    # The pipeline, from cost-sync's textfile metrics.
+    cost_sync_hours   = "(time() - monitoring_cost_sync_last_success_seconds) / 3600"
+    normalizer_hours  = "(time() - monitoring_normalizer_last_success_seconds) / 3600"
+    normalizer_failed = "monitoring_normalizer_last_run_failed"
+    aws_charge_days   = "(time() - monitoring_cost_newest_charge_seconds{provider=\"aws\"}) / 86400"
+    databricks_hours  = "(time() - monitoring_cost_newest_output_seconds{provider=\"databricks\"}) / 3600"
+    task_overdue      = "monitoring_task_run_overdue_hours"
+    task_over_ceiling = "monitoring_task_run_over_ceiling_usd"
   }
 
   # CPU credits: burstable types, and the balance each size can hold (the
@@ -35,6 +44,8 @@ locals {
   credits_max         = contains(local.burstable_families, local.instance_family) ? lookup(local.credits_max_by_size, local.instance_size, null) : null
   burstable           = local.credits_max != null
   served              = var.domain != null
+  cost_on             = var.cost != null
+  cost_providers      = local.cost_on ? var.cost.providers : toset([])
 
   # The CloudWatch query for the credit balance (panel and rule).
   credits_query = {
@@ -74,5 +85,13 @@ locals {
     tls        = { warning = local.t.tls_days.warning, critical = local.t.tls_days.critical, unit = " days", worse = "below", words = ["warning", "critical"] }
     eval       = { warning = 1, critical = null, unit = "", worse = "at", words = ["warning", "critical"] }
     os_release = { warning = local.t.os_release_update_days.warning, critical = null, unit = " days", worse = "above", words = ["warning", "critical"] }
+
+    cost_sync         = { warning = local.t.cost_sync_hours.warning, critical = local.t.cost_sync_hours.critical, unit = " h", worse = "above", words = ["warning", "critical"] }
+    normalizer        = { warning = local.t.normalizer_hours.warning, critical = local.t.normalizer_hours.critical, unit = " h", worse = "above", words = ["warning", "critical"] }
+    normalizer_failed = { warning = null, critical = 1, unit = "", worse = "at", words = ["warning", "critical"] }
+    aws_charge        = { warning = local.t.aws_charge_days.warning, critical = local.t.aws_charge_days.critical, unit = " days", worse = "above", words = ["warning", "critical"] }
+    databricks        = { warning = local.t.databricks_delivery_hours.warning, critical = local.t.databricks_delivery_hours.critical, unit = " h", worse = "above", words = ["warning", "critical"] }
+    task_overdue      = { warning = null, critical = 0, unit = " h", worse = "above", words = ["warning", "critical"] }
+    task_over_ceiling = { warning = null, critical = 0, unit = " USD", worse = "above", words = ["warning", "critical"] }
   }
 }

@@ -27,6 +27,9 @@ module "node" {
     routes   = { host = "platform" }
   }
 
+  # The billing bucket the billing-normalizer writes to.
+  cost = { bucket = "acme-billing" }
+
   snapshots = { enabled = true }
 }
 

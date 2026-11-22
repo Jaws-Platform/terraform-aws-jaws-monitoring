@@ -15,18 +15,22 @@ variables {
   # thresholds variable; the_default_thresholds_are_the_specs (in
   # monitoring_node.tftest.hcl) pins that copy to the same numbers.
   thresholds = {
-    cpu_percent             = { warning = 60, critical = 85 }
-    cpu_credits_percent     = { warning = 25, critical = 5 }
-    memory_percent          = { warning = 70, critical = 90 }
-    swap_percent            = { warning = 25, critical = 75 }
-    disk_percent            = { warning = 70, critical = 90 }
-    disk_full_days          = { warning = 7, critical = 2 }
-    inodes_percent          = { warning = 70, critical = 90 }
-    prometheus_size_percent = { warning = 85 }
-    prometheus_history_days = { warning = 90 }
-    container_restarts      = { warning = 1, critical = 3 }
-    tls_days                = { warning = 14, critical = 3 }
-    os_release_update_days  = { warning = 7 }
+    cpu_percent               = { warning = 60, critical = 85 }
+    cpu_credits_percent       = { warning = 25, critical = 5 }
+    memory_percent            = { warning = 70, critical = 90 }
+    swap_percent              = { warning = 25, critical = 75 }
+    disk_percent              = { warning = 70, critical = 90 }
+    disk_full_days            = { warning = 7, critical = 2 }
+    inodes_percent            = { warning = 70, critical = 90 }
+    prometheus_size_percent   = { warning = 85 }
+    prometheus_history_days   = { warning = 90 }
+    container_restarts        = { warning = 1, critical = 3 }
+    tls_days                  = { warning = 14, critical = 3 }
+    os_release_update_days    = { warning = 7 }
+    normalizer_hours          = { warning = 3, critical = 12 }
+    aws_charge_days           = { warning = 3, critical = 5 }
+    databricks_delivery_hours = { warning = 36, critical = 60 }
+    cost_sync_hours           = { warning = 2, critical = 6 }
   }
 }
 
@@ -950,5 +954,234 @@ run "the_patch_reminder_repeats_daily" {
   assert {
     condition     = jsonencode(one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes[0].object_matchers) == jsonencode([["alertname", "=", "Newer AL2023 release available — warning"]]) && one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes[0].receiver == "slack-platform" && one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes[0].repeat_interval == "24h"
     error_message = "a due AMI bump can stay due for days: its reminder goes to the host channel once a day, not every 4 hours"
+  }
+}
+
+run "with_cost_grafana_reads_the_cost_database" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = jsonencode(one([for d in yamldecode(output.files["grafana/provisioning/datasources/datasources.yaml"]).datasources : { type = d.type, url = d.url, user = d.user, database = d.jsonData.database, sslmode = d.jsonData.sslmode, password = d.secureJsonData.password } if d.uid == "cost"])) == jsonencode({ type = "grafana-postgresql-datasource", url = "postgres:5432", user = "cost_reader", database = "cost", sslmode = "disable", password = "$COST_READER_PASSWORD" })
+    error_message = "Grafana reads the cost database as its read-only user, with the password from its environment"
+  }
+}
+
+run "without_cost_there_is_no_cost_database_to_read" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = length([for d in yamldecode(output.files["grafana/provisioning/datasources/datasources.yaml"]).datasources : d if d.uid == "cost"]) == 0
+    error_message = "a host-only node has no cost data source"
+  }
+
+  assert {
+    condition     = jsonencode(yamldecode(output.files["grafana/provisioning/datasources/datasources.yaml"]).deleteDatasources) == jsonencode([{ name = "Cost", orgId = 1 }])
+    error_message = "and deletes an earlier one: Grafana 13.3 keeps a data source dropped from the file, prune or not"
+  }
+}
+
+run "the_pipeline_row_shows_with_cost" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id >= 60 && p.id <= 68]) == 9 && one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p.type if p.id == 60]) == "row" && one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p.type if p.id == 61]) == "text"
+    error_message = "with cost, the host dashboard ends with the Pipeline row"
+  }
+}
+
+run "the_pipeline_row_needs_cost" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id >= 60]) == 0
+    error_message = "a host-only node has no pipeline to watch"
+  }
+
+  assert {
+    condition     = length(flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules])) == 0 && length([for d in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).deleteRules : d.uid]) == 11
+    error_message = "and every pipeline rule is deleted"
+  }
+}
+
+run "pipeline_rules_need_their_providers" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws"] }
+  }
+
+  assert {
+    condition     = length([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules]) : r if startswith(r.uid, "pipeline-databricks-stale-")]) == 0 && contains([for d in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).deleteRules : d.uid], "pipeline-databricks-stale-warning") && contains([for d in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).deleteRules : d.uid], "pipeline-databricks-stale-critical")
+    error_message = "without Databricks there is no Databricks freshness rule"
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 65]) == 0 && length([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 64]) == 1
+    error_message = "nor its panel; AWS keeps its own"
+  }
+}
+
+run "pipeline_rules_carry_area_pipeline" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = length(flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules])) == 11 && alltrue([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules]) : r.labels.area == "pipeline" && r.annotations.__dashboardUid__ == "monitoring-host" && startswith(r.uid, "pipeline-")])
+    error_message = "all 11 pipeline rules route by area pipeline and link the host dashboard"
+  }
+
+  assert {
+    condition     = jsonencode([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : { name = gr.name, folder = gr.folder, interval = gr.interval }]) == jsonencode([{ name = "pipeline", folder = "Monitoring", interval = "1m" }]) && length([for d in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).deleteRules : d.uid]) == 0
+    error_message = "in their own group, with nothing deleted"
+  }
+}
+
+run "the_task_run_rules_fire_on_any_overrun" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules]) : r if r.uid == "pipeline-task-run-overdue-critical"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 0 && one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules]) : r if r.uid == "pipeline-task-run-over-ceiling-critical"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 0
+    error_message = "a possibly leaked run, or one over its ceiling, is critical at once"
+  }
+
+  assert {
+    condition     = alltrue([for id in [66, 67] : contains([for t in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == id]).targets : try(t.expr, "")], "vector(0)")])
+    error_message = "their panels draw the line at 0"
+  }
+}
+
+run "every_pipeline_rule_mirrors_its_panel" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost       = { providers = ["aws", "databricks"] }
+    thresholds = merge(var.thresholds, { cost_sync_hours = { warning = 1, critical = 4 } })
+  }
+
+  assert {
+    condition     = alltrue([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules]) : length([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if tostring(p.id) == r.annotations.__panelId__]) == 1])
+    error_message = "every pipeline rule links a panel of the host dashboard"
+  }
+
+  assert {
+    condition = alltrue([
+      for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules]) : contains(
+        [for t in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if tostring(p.id) == r.annotations.__panelId__]).targets : try(t.expr, "")],
+        one([for d in r.data : d.model.expr if d.refId == "A"])
+      )
+    ])
+    error_message = "a pipeline rule's panel plots exactly what the rule evaluates"
+  }
+
+  assert {
+    condition = alltrue([
+      for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules]) : contains(
+        [for t in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if tostring(p.id) == r.annotations.__panelId__]).targets : try(t.expr, "")],
+        "vector(${one([for d in r.data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) + (contains(["pipeline-normalizer-failed-critical"], r.uid) ? 0.5 : 0)})"
+      )
+    ])
+    error_message = "and draws its threshold as a dashed line"
+  }
+
+  assert {
+    condition     = one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules]) : r if r.uid == "pipeline-cost-sync-late-warning"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 1 && one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules]) : r if r.uid == "pipeline-cost-sync-late-critical"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 4
+    error_message = "overridden thresholds reach the pipeline rules"
+  }
+}
+
+run "every_pipeline_rule_waits_at_least_two_minutes" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = alltrue([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-pipeline.json"]).groups : gr.rules]) : endswith(r.for, "m") && tonumber(trimsuffix(r.for, "m")) >= 2])
+    error_message = "no pipeline rule fires on a single evaluation"
+  }
+}
+
+run "rejects_a_uid_the_pipeline_rules_own" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    extra_dashboards  = { "Extra/extra.json" = file("tests/fixtures/extra-dashboard.json") }
+    extra_alert_rules = { smoke = replace(file("tests/fixtures/extra-rule.yaml"), "uid: extra-up-critical", "uid: pipeline-cost-sync-late-warning") }
+  }
+
+  expect_failures = [output.files]
+}
+
+run "an_over_ceiling_run_posts_once_a_week" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost  = { providers = ["aws"] }
+    slack = { channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }, routes = { host = "platform", pipeline = "costs" } }
+  }
+
+  assert {
+    condition     = length([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : r if jsonencode(r.object_matchers) == jsonencode([["alertname", "=", "Task run over its ceiling — critical"]]) && r.receiver == "slack-costs" && r.repeat_interval == "168h"]) == 1
+    error_message = "an over-ceiling run is reported once, to the pipeline channel, not every 4 hours while its bill stands"
   }
 }

@@ -11,7 +11,8 @@ Each output is built on its own: one that fails is reported and every other
 output is still built, so a bad old period never freezes the current one. The
 runs table goes first, as the smallest and most time-critical. The run record
 is always written, to _runs/<time>.json and _runs/latest.json, and the run then
-raises if anything failed.
+raises if anything failed. Each output is written twice: data.parquet, and its
+CSV twin data.csv.gz for the monitoring node (twin.py).
 """
 
 import contextlib
@@ -30,8 +31,10 @@ from .databricks import latest_databricks_deliveries, map_databricks_rows
 from .parquet import read_rows, write_rows
 from .runs import flatten_event, records_by_month
 from .store import Store
+from .twin import write_twin
 
 PARQUET = "application/vnd.apache.parquet"
+GZIP = "application/gzip"
 
 # S3 user metadata is limited to 2 KB in all; warnings beyond this are summarized.
 _WARNINGS_BUDGET = 1500
@@ -92,11 +95,19 @@ def _output(
     metadata = {"source-signature": signature}
     if warnings:
         metadata["warnings"] = _encode_warnings(warnings)
+    # The CSV twin first: the Parquet's signature then only ever marks an output
+    # whose twin is written too.
+    store.put(_twin_key(key), write_twin(rows, table_schema), metadata=metadata, content_type=GZIP)
     store.put(key, write_rows(rows, table_schema), metadata=metadata, content_type=PARQUET)
     billed = round(sum(row.get("BilledCost") or 0.0 for row in rows), 6) if "BilledCost" in table_schema.names else None
     record["warnings"].extend(warnings)
     record["outputs"].append({"key": key, "provider": provider, "period": period, "rebuilt": True,
                               "rows": len(rows), "billed_cost": billed, "warnings": warnings})
+
+
+def _twin_key(key: str) -> str:
+    """The CSV twin beside a data.parquet output."""
+    return key.removesuffix("data.parquet") + "data.csv.gz"
 
 
 def _focus_key(config: Config, provider: str, period: str) -> str:

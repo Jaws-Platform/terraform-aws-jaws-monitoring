@@ -194,11 +194,76 @@ it is told to delete it.
 ### Testing it
 
 `scripts/check-module.sh modules/monitoring-node` runs the Terraform tests,
-the reconciler and release-check tests, and the Grafana smoke test, which
-needs Docker. The smoke test checks every PromQL query with `promtool`, starts
-the pinned Grafana on what the module renders, and compares Grafana's API
-with the files; then it renders a changed configuration and checks that what
-was removed is gone.
+the reconciler, cost-sync and release-check tests, and two Docker tests:
+
+- **the cost-sync test** runs the real script against the pinned Postgres
+  and the normalizer's contract fixtures;
+- **the Grafana smoke test** checks every PromQL query with `promtool`, starts
+  the pinned Grafana on what the module renders (next to a Postgres the real
+  cost-sync set up), and compares Grafana's API with the files. Then it
+  renders a changed configuration and checks that what was removed is gone.
+
+## Cost data
+
+With `cost`, the node keeps a `cost` database in its Postgres, filled from
+the billing bucket's `normalized/` layer, the only part of the bucket its
+role can read:
+
+```hcl
+cost = {
+  bucket = "acme-billing"
+  # normalized_prefix = "normalized"
+  # providers         = ["aws", "databricks"]   # which freshness alerts apply
+  # run_join_tags     = ["RunId", "TaskId"]     # the tags a run's cost rows carry
+}
+```
+
+**cost-sync** (a systemd timer, at boot and every 30 minutes) loads the
+billing-normalizer's CSV twins (`data.csv.gz`).
+
+- Each output whose ETag changed is loaded in one transaction, so it is
+  never doubled or half there.
+- An output that is gone loses its rows, and one bad output never stops the
+  rest.
+- It records the normalizer's `_runs/latest.json`, and writes the textfile
+  metrics the pipeline alerts read.
+- Its script and config travel in the bundle, so a change to them never
+  replaces the instance.
+- `journalctl -u monitoring-cost-sync` shows each run.
+
+**The database** is a cache of the bucket: a schema version change, or a lost
+data volume, rebuilds it from `normalized/`. Grafana reads it through the
+`Cost` data source as the read-only `cost_reader`. Ad hoc, from a Session
+Manager shell:
+
+```sh
+sudo docker exec -it monitoring-postgres-1 psql -U monitoring -d cost
+```
+
+| Object | What it holds |
+|---|---|
+| `cost.lines` | one row per normalized cost row: the FOCUS columns in snake_case, `tags` (jsonb), `project`, `component`, `environment`, `serverless`, `source` |
+| `cost.run_events` | one row per task-run event (`started`, `finished`, `swept`) |
+| `cost.task_runs` | one row per run: its launch metadata, `started_at`, `ended_at`, `outcome` (`swept`, or null while running) |
+| `cost.task_run_costs` | each run's billed cost: the cost rows that carry its join tags |
+| `cost.loads`, `cost.normalizer_runs` | what was loaded, and the normalizer runs seen |
+
+**The pipeline alerts** (label `area = pipeline`, on the host dashboard's
+Pipeline row):
+
+| Rule | Warning | Critical | `thresholds` |
+|---|---|---|---|
+| Cost sync late | 2 h | 6 h | `cost_sync_hours` |
+| Normalizer late (no successful run) | 3 h | 12 h | `normalizer_hours` |
+| Normalizer run failed | | the last run failed | |
+| AWS charges stale (newest charge loaded) | 3 days | 5 days | `aws_charge_days` |
+| Databricks delivery stale | 36 h | 60 h | `databricks_delivery_hours` |
+| Task run possibly leaked (no end, an hour past its max hours) | | any | |
+| Task run over its ceiling (billed cost; runs from the last 7 days, posted once a week) | | any | |
+
+Until any data has arrived, each clock starts when the node first ran
+cost-sync. A new node isn't alarmed in its first hours, but is once data
+never comes.
 
 ## Recovery
 
@@ -207,7 +272,7 @@ was removed is gone.
 | Stop and start | The disks persist; the stack comes back, and DNS follows the new address | Metrics for the time it was off |
 | Reboot or EC2 recovery | Same disks, same instance | Minutes of metrics |
 | Instance replaced | The new instance reattaches the data volume and carries on | Minutes of metrics |
-| Data volume lost | Dashboards and alerts are reprovisioned from the bundle; Grafana users other than the admin must be added again | Prometheus history since the last snapshot |
+| Data volume lost | Dashboards and alerts are reprovisioned from the bundle, and cost-sync rebuilds the cost database from `normalized/`; Grafana users other than the admin must be added again | Prometheus history since the last snapshot |
 
 ## Usage
 
@@ -232,6 +297,8 @@ module "monitoring_node" {
     channels = { platform = "/acme/monitoring/slack/platform" }
     routes   = { host = "platform" }
   }
+
+  cost = { bucket = "acme-billing" }
 }
 ```
 
@@ -297,6 +364,7 @@ module "monitoring_node" {
 | subnet\_id | A public subnet for the node. The data volume is created in its availability zone, so moving the node to another zone means a new volume. | `string` | n/a | yes |
 | vpc\_id | The VPC of the node's subnet. | `string` | n/a | yes |
 | acme\_email | Optional contact address for Let's Encrypt. | `string` | `null` | no |
+| cost | The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), and the tags a task run's cost rows are joined on. null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it. | <pre>object({<br/>    bucket            = string<br/>    normalized_prefix = optional(string, "normalized")<br/>    providers         = optional(set(string), ["aws", "databricks"])<br/>    run_join_tags     = optional(list(string), ["RunId", "TaskId"])<br/>  })</pre> | `null` | no |
 | data\_volume\_gb | Size of the data volume: Prometheus, Postgres, Grafana and Caddy's state, kept when the instance is replaced. | `number` | `30` | no |
 | domain | The name Grafana is served at over HTTPS (Caddy, Let's Encrypt). Null: no ingress at all; reach Grafana through a Session Manager port forward. | `string` | `null` | no |
 | extra\_alert\_rules | More alert rules: a name to a Grafana alerting provisioning document (YAML), provisioned as rules-extra-<name>.json. Every rule needs labels area (host, pipeline or cost) and severity (warning or critical). To remove a rule, keep its uid under deleteRules in the same document. | `map(string)` | `{}` | no |
@@ -307,7 +375,7 @@ module "monitoring_node" {
 | root\_volume\_gb | Size of the root volume: the OS, the images and a 2 GB swap file. | `number` | `12` | no |
 | slack | Slack notifications: channels (name => the SSM SecureString parameter holding its incoming-webhook URL) and routes (area => channel; areas are host, pipeline and cost, and host is required, since the root policy uses it). null means no notifications: alerts show in Grafana only. Adding a channel is one webhook parameter and one line here. | <pre>object({<br/>    channels = map(string)<br/>    routes   = map(string)<br/>  })</pre> | `null` | no |
 | snapshots | Daily snapshots of the data volume (Data Lifecycle Manager), at time\_utc, keeping the last `keep`. | <pre>object({<br/>    enabled  = optional(bool, false)<br/>    time_utc = optional(string, "03:00")<br/>    keep     = optional(number, 7)<br/>  })</pre> | `{}` | no |
-| thresholds | Alert thresholds, which also set the dashboard's tile colours and dashed lines. Every attribute is optional and defaults to spec 6.8's numbers. Percentages are of the resource; cpu\_credits\_percent is of the instance type's maximum balance; container\_restarts counts restarts in 15 minutes; the *\_days are days. prometheus\_history\_days warns only while Prometheus is above prometheus\_size\_percent of its size cap, i.e. when the cap is costing history. | <pre>object({<br/>    cpu_percent             = optional(object({ warning = number, critical = number }), { warning = 60, critical = 85 })<br/>    cpu_credits_percent     = optional(object({ warning = number, critical = number }), { warning = 25, critical = 5 })<br/>    memory_percent          = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    swap_percent            = optional(object({ warning = number, critical = number }), { warning = 25, critical = 75 })<br/>    disk_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    disk_full_days          = optional(object({ warning = number, critical = number }), { warning = 7, critical = 2 })<br/>    inodes_percent          = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    prometheus_size_percent = optional(object({ warning = number }), { warning = 85 })<br/>    prometheus_history_days = optional(object({ warning = number }), { warning = 90 })<br/>    container_restarts      = optional(object({ warning = number, critical = number }), { warning = 1, critical = 3 })<br/>    tls_days                = optional(object({ warning = number, critical = number }), { warning = 14, critical = 3 })<br/>    os_release_update_days  = optional(object({ warning = number }), { warning = 7 })<br/>  })</pre> | `{}` | no |
+| thresholds | Alert thresholds, which also set the dashboard's tile colours and dashed lines. Every attribute is optional and defaults to spec 6.8's numbers. Percentages are of the resource; cpu\_credits\_percent is of the instance type's maximum balance; container\_restarts counts restarts in 15 minutes; the *\_days are days. prometheus\_history\_days warns only while Prometheus is above prometheus\_size\_percent of its size cap, i.e. when the cap is costing history. | <pre>object({<br/>    cpu_percent               = optional(object({ warning = number, critical = number }), { warning = 60, critical = 85 })<br/>    cpu_credits_percent       = optional(object({ warning = number, critical = number }), { warning = 25, critical = 5 })<br/>    memory_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    swap_percent              = optional(object({ warning = number, critical = number }), { warning = 25, critical = 75 })<br/>    disk_percent              = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    disk_full_days            = optional(object({ warning = number, critical = number }), { warning = 7, critical = 2 })<br/>    inodes_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })<br/>    prometheus_size_percent   = optional(object({ warning = number }), { warning = 85 })<br/>    prometheus_history_days   = optional(object({ warning = number }), { warning = 90 })<br/>    container_restarts        = optional(object({ warning = number, critical = number }), { warning = 1, critical = 3 })<br/>    tls_days                  = optional(object({ warning = number, critical = number }), { warning = 14, critical = 3 })<br/>    os_release_update_days    = optional(object({ warning = number }), { warning = 7 })<br/>    normalizer_hours          = optional(object({ warning = number, critical = number }), { warning = 3, critical = 12 })<br/>    aws_charge_days           = optional(object({ warning = number, critical = number }), { warning = 3, critical = 5 })<br/>    databricks_delivery_hours = optional(object({ warning = number, critical = number }), { warning = 36, critical = 60 })<br/>    cost_sync_hours           = optional(object({ warning = number, critical = number }), { warning = 2, critical = 6 })<br/>  })</pre> | `{}` | no |
 | zone\_id | The Route 53 hosted zone of `domain`. The node may only upsert its own A record there, at every boot. | `string` | `null` | no |
 
 ## Outputs

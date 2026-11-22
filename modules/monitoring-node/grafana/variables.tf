@@ -25,19 +25,31 @@ variable "domain" {
 variable "thresholds" {
   description = "The alert thresholds, resolved by the monitoring-node module (its thresholds variable holds the defaults and checks them)."
   type = object({
-    cpu_percent             = object({ warning = number, critical = number })
-    cpu_credits_percent     = object({ warning = number, critical = number })
-    memory_percent          = object({ warning = number, critical = number })
-    swap_percent            = object({ warning = number, critical = number })
-    disk_percent            = object({ warning = number, critical = number })
-    disk_full_days          = object({ warning = number, critical = number })
-    inodes_percent          = object({ warning = number, critical = number })
-    prometheus_size_percent = object({ warning = number })
-    prometheus_history_days = object({ warning = number })
-    container_restarts      = object({ warning = number, critical = number })
-    tls_days                = object({ warning = number, critical = number })
-    os_release_update_days  = object({ warning = number })
+    cpu_percent               = object({ warning = number, critical = number })
+    cpu_credits_percent       = object({ warning = number, critical = number })
+    memory_percent            = object({ warning = number, critical = number })
+    swap_percent              = object({ warning = number, critical = number })
+    disk_percent              = object({ warning = number, critical = number })
+    disk_full_days            = object({ warning = number, critical = number })
+    inodes_percent            = object({ warning = number, critical = number })
+    prometheus_size_percent   = object({ warning = number })
+    prometheus_history_days   = object({ warning = number })
+    container_restarts        = object({ warning = number, critical = number })
+    tls_days                  = object({ warning = number, critical = number })
+    os_release_update_days    = object({ warning = number })
+    normalizer_hours          = object({ warning = number, critical = number })
+    aws_charge_days           = object({ warning = number, critical = number })
+    databricks_delivery_hours = object({ warning = number, critical = number })
+    cost_sync_hours           = object({ warning = number, critical = number })
   })
+}
+
+variable "cost" {
+  description = "The cost data on the node (its providers), already checked; null for a host-only node."
+  type = object({
+    providers = set(string)
+  })
+  default = null
 }
 
 variable "slack" {

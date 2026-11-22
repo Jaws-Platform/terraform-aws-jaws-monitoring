@@ -13,9 +13,12 @@
 locals {
   datasources = yamlencode({
     apiVersion = 1
-    # A data source dropped from this file is dropped from Grafana too.
-    prune = true
-    datasources = [
+    # prune is meant to drop a data source removed from this file, but Grafana
+    # 13.3 keeps it (the smoke test's phase 2 shows it), so the Cost data
+    # source is deleted by name whenever cost is off.
+    prune             = true
+    deleteDatasources = [for d in [{ name = "Cost", orgId = 1 }] : d if var.cost == null]
+    datasources = concat([
       {
         name      = "Prometheus"
         uid       = "prometheus"
@@ -32,7 +35,20 @@ locals {
         access   = "proxy"
         jsonData = { authType = "default", defaultRegion = var.region }
       },
-    ]
+      ], [
+      # The cost database cost-sync keeps, read as its read-only user. The
+      # password is expanded from Grafana's environment.
+      for d in [{
+        name           = "Cost"
+        uid            = "cost"
+        type           = "grafana-postgresql-datasource"
+        access         = "proxy"
+        url            = "postgres:5432"
+        user           = "cost_reader"
+        secureJsonData = { password = "$COST_READER_PASSWORD" }
+        jsonData       = { database = "cost", sslmode = "disable", postgresVersion = 1700 }
+      }] : d if var.cost != null
+    ])
   })
 
   dashboard_providers = yamlencode({
@@ -58,7 +74,10 @@ locals {
   # Alerting provisioning files the module renders: path => document (an
   # object, encoded below).
   module_alerting = merge(
-    { "grafana/provisioning/alerting/rules-host.json" = local.host_rules_file },
+    {
+      "grafana/provisioning/alerting/rules-host.json"     = local.rules_files.host
+      "grafana/provisioning/alerting/rules-pipeline.json" = local.rules_files.pipeline
+    },
     local.notification_files,
   )
 

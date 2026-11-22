@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import pyarrow as pa
 
 # Bump to rebuild every normalized object: part of every source signature.
-MAPPER_VERSION = "1"
+MAPPER_VERSION = "2"  # 2: every output gains its CSV twin
 
 _TIMESTAMP = pa.timestamp("ms", tz="UTC")
 _TAGS = pa.map_(pa.string(), pa.string())

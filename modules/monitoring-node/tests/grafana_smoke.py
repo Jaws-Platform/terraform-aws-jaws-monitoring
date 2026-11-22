@@ -124,6 +124,24 @@ def observed(url: str, auth: str) -> dict:
     }
 
 
+def cost_problems(url: str, auth: str) -> list:
+    """The Cost data source connects, and its read-only user can read the views."""
+    health = api(url, auth, "/api/datasources/uid/cost/health")
+    if health.get("status") != "OK":
+        return [f"cost: the data source is not healthy: {health}"]
+    body = json.dumps({"from": "now-5m", "to": "now", "queries": [{
+        "refId": "A", "datasource": {"uid": "cost", "type": "grafana-postgresql-datasource"},
+        "rawSql": "SELECT count(*) AS runs FROM cost.task_runs", "format": "table"}]}).encode()
+    request = urllib.request.Request(url + "/api/ds/query", data=body, method="POST",
+                                     headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        frames = json.loads(response.read())["results"]["A"]["frames"]
+    values = frames[0]["data"]["values"] if frames else []
+    if values != [[0]]:
+        return [f"cost: SELECT count(*) FROM cost.task_runs returned {values}, expected [[0]]"]
+    return []
+
+
 def problems(want: dict, got: dict) -> list:
     found = []
     for key in ("rules", "dashboards", "datasources"):
@@ -155,6 +173,8 @@ def compare(release: str, url: str, user: str, password: str, phase: str) -> Non
         # until Grafana agrees or the wait runs out.
         try:
             found = problems(want, observed(url, auth))
+            if not found and "cost" in want["datasources"]:
+                found = cost_problems(url, auth)
         except (urllib.error.URLError, OSError, ValueError) as error:
             found = [f"api: {error}"]
         if not found:
