@@ -20,6 +20,7 @@ locals {
     overview   = local.overview_vars
     project    = local.project_vars
     databricks = local.databricks_vars
+    tasks      = local.tasks_vars
   }
 
   # Board => { uid, title, time, stats, series, bars, tables, pies, rows }.
@@ -27,6 +28,7 @@ locals {
     overview   = local.overview_board
     project    = local.project_board
     databricks = local.databricks_board
+    tasks      = local.tasks_board
   }
 
   cost_filter = {
@@ -90,10 +92,16 @@ locals {
       ],
       [
         for s in try(d.bars, []) : {
-          id          = s.id, type = "bargauge", title = s.title, description = s.description, datasource = local.cost_ds, gridPos = s.grid
-          targets     = [merge(local.cost_target, { rawSql = s.sql, format = "table" })]
-          options     = { reduceOptions = { calcs = ["lastNotNull"], fields = "", values = true }, orientation = "horizontal", displayMode = "basic", showUnfilled = true }
-          fieldConfig = { defaults = { unit = try(s.unit, "currencyUSD"), decimals = try(s.decimals, 0), color = { mode = "fixed", fixedColor = "blue" } }, overrides = [] }
+          id      = s.id, type = "bargauge", title = s.title, description = s.description, datasource = local.cost_ds, gridPos = s.grid
+          targets = [merge(local.cost_target, { rawSql = s.sql, format = "table" })]
+          options = { reduceOptions = { calcs = ["lastNotNull"], fields = "", values = true }, orientation = "horizontal", displayMode = "basic", showUnfilled = true }
+          fieldConfig = {
+            defaults = merge(
+              { unit = try(s.unit, "currencyUSD"), decimals = try(s.decimals, 0), color = { mode = try(s.steps, null) == null ? "fixed" : "thresholds", fixedColor = "blue" } },
+              { for k, v in { thresholds = try({ mode = "absolute", steps = s.steps }, null) } : k => v if v != null },
+            )
+            overrides = []
+          }
         }
       ],
       [
