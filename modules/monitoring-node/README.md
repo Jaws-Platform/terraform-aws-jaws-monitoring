@@ -101,7 +101,7 @@ aws ssm start-session --target <instance_id> \
 ```hcl
 module "monitoring_node" {
   source  = "Jaws-Platform/jaws-monitoring/aws//modules/monitoring-node"
-  version = "0.2.0" # x-release-please-version
+  version = "0.3.0" # x-release-please-version
 
   name      = "acme-monitoring"
   vpc_id    = "vpc-0123456789abcdef0"
