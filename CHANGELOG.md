@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.8.0...v0.8.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **monitoring-node:** keep resolving the pinned image after amazon deprecates it ([#19](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/issues/19)) ([255153a](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/commit/255153a457c9e8f18779a815808a38ac335ae7f5))
+
 ## [0.8.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.7.0...v0.8.0) (2026-11-22)
 
 
