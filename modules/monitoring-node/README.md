@@ -221,6 +221,7 @@ cost = {
     accounts = { production = 80 }             # by account id or name
   }
   # anomaly_floor_usd = 2                      # a day must also be this much over its norm
+  # databricks_workspace_tag = "Workspace"     # names a workspace on its AWS rows (the all-in)
 }
 ```
 
@@ -251,13 +252,17 @@ sudo docker exec -it monitoring-postgres-1 psql -U monitoring -d cost
 | `cost.lines` | one row per normalized cost row: the FOCUS columns in snake_case, `tags` (jsonb), `project`, `component`, `environment`, `serverless`, `source` |
 | `cost.run_events` | one row per task-run event (`started`, `finished`, `swept`) |
 | `cost.task_runs` | one row per run: its launch metadata, `started_at`, `ended_at`, `outcome` (`swept`, or null while running) |
-| `cost.task_run_costs` | each run's billed cost: the cost rows that carry its join tags |
+| `cost.task_run_costs` | each run's billed cost: the cost rows that carry its join tags, in any key form |
 | `cost.loads`, `cost.normalizer_runs` | what was loaded, and the normalizer runs seen |
-| `cost.daily` | spend per UTC day, provider, account, project (`(untagged)` without one), environment, service and charge category, with whether the day is `complete` and whether it is a `long_period` charge |
+| `cost.daily` | spend per UTC day, provider, account, project (`(untagged)` without one), environment, component, service and charge category, with whether the day is `complete` and whether it is a `long_period` charge |
 | `cost.month_to_date` | per scope (`total`, each project, each account): month to date, the forecast, the budget, and both as a share of it |
 | `cost.anomalies` | each of the last three days' spend per total, project and service against the median of the 14 complete days before it |
 | `cost.untagged`, `cost.untagged_new` | untagged spend (tax and credits aside), and each account and service's first untagged day and spend since; `is_new` when that day is the newest or the day before |
 | `cost.budgets`, `cost.as_of` | the budgets from the `cost` input (rewritten every run), and the newest complete day |
+| `cost.runs` | one row per task run, from its record or, without one, its tagged cost rows: project, campaign, workflow, profile, instance, hours, outcome, cost (billed, or an `estimated` hours × hourly price), ceiling share, GPU-hours, links |
+| `cost.campaigns` | per campaign and project: runs, outcomes, hours, cost, savings against on demand, cost per passed run |
+| `cost.databricks_daily`, `cost.databricks_all_in` | Databricks per day by workspace, product, SKU and serverless, with DBUs, at list price; and each workspace's all-in cost |
+| `cost.tag(tags, key)` | a tag's value, whichever key form FOCUS wrote: `Key`, `user:Key` or `user_key` |
 
 **Days and the forecast.**
 
@@ -304,6 +309,36 @@ date, forecast and spend against the total budget, yesterday, the month-on-
 month change, untagged spend and the newest complete day. Below them, the
 trend, where the money goes, the budgets, the biggest movers and the
 untagged spend.
+
+Every multi-value filter's "All" is `'__all'`, so a filter with no values
+yet (a new node) never breaks a panel.
+
+**Cost · Project** shows one project over the last 90 days: its month to
+date, budget and forecast, each month's running spend against the budget,
+and spend by component, service and environment, daily and month to date.
+
+**Cost · Databricks** (when `databricks` is a provider) shows spend and DBUs
+by product, workspace and SKU, serverless against classic, at list price,
+which is what's billed when paying as you go. Its **all-in** panels add the
+AWS rows whose `databricks_workspace_tag` tag (`Workspace`) names the
+workspace: classic clusters' EC2 and EBS, and the workspace's other tagged
+AWS resources. They count only once that tag is an active cost allocation
+tag and workspace names are exported; until then the AWS part is 0.
+
+**Cost · Tasks** shows the last 30 days of task runs, filtered by project,
+campaign, workflow, profile, outcome and market: spend tiles, campaigns (a
+click filters to one), one row per run, spend by workflow, and efficiency.
+
+- **A run's record** gives its metadata. The table reads `links.run`,
+  `links.pr` and `links.commit` (Run, PR and Commit open them), and
+  `attributes.profile` and `attributes.lifecycle`.
+- **A run with no record** (before records, or one that failed to write) is
+  built from its tagged cost rows: `RunId`, `TaskId`, `Workflow`, `Profile`,
+  `Lifecycle`, `Campaign`. Its hours are its instance hours (`Hrs` usage).
+- **Cost** is billed, or marked `~` as an estimate (hours × the hourly price
+  paid) until the run's last day is complete.
+- **Tag keys** are read in any of FOCUS's three forms (`RunId`,
+  `user:RunId`, `user_runid`), since AWS doesn't document which it writes.
 
 ## Recovery
 
@@ -404,7 +439,7 @@ module "monitoring_node" {
 | subnet\_id | A public subnet for the node. The data volume is created in its availability zone, so moving the node to another zone means a new volume. | `string` | n/a | yes |
 | vpc\_id | The VPC of the node's subnet. | `string` | n/a | yes |
 | acme\_email | Optional contact address for Let's Encrypt. | `string` | `null` | no |
-| cost | The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), the tags a task run's cost rows are joined on, monthly budgets in USD (total, per project, per account by id or name), and the anomaly floor (the day's spend must also be this many USD over its 14-day median). null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it. | <pre>object({<br/>    bucket            = string<br/>    normalized_prefix = optional(string, "normalized")<br/>    providers         = optional(set(string), ["aws", "databricks"])<br/>    run_join_tags     = optional(list(string), ["RunId", "TaskId"])<br/>    budgets = optional(object({<br/>      total    = optional(number)<br/>      projects = optional(map(number), {})<br/>      accounts = optional(map(number), {})<br/>    }), {})<br/>    anomaly_floor_usd = optional(number, 2)<br/>  })</pre> | `null` | no |
+| cost | The cost data, read from the billing bucket's normalized/ layer (the billing-normalizer's CSV twins): bucket, the normalizer's prefix, the providers expected there (for the staleness alerts), the tags a task run's cost rows are joined on, monthly budgets in USD (total, per project, per account by id or name), the anomaly floor (the day's spend must also be this many USD over its 14-day median), and the tag whose value names a Databricks workspace on its AWS resources (the all-in cost; it must be an active cost allocation tag). null for a host-only node. With it, cost-sync keeps the cost database on the node and Grafana reads it. | <pre>object({<br/>    bucket            = string<br/>    normalized_prefix = optional(string, "normalized")<br/>    providers         = optional(set(string), ["aws", "databricks"])<br/>    run_join_tags     = optional(list(string), ["RunId", "TaskId"])<br/>    budgets = optional(object({<br/>      total    = optional(number)<br/>      projects = optional(map(number), {})<br/>      accounts = optional(map(number), {})<br/>    }), {})<br/>    anomaly_floor_usd        = optional(number, 2)<br/>    databricks_workspace_tag = optional(string, "Workspace")<br/>  })</pre> | `null` | no |
 | data\_volume\_gb | Size of the data volume: Prometheus, Postgres, Grafana and Caddy's state, kept when the instance is replaced. | `number` | `30` | no |
 | domain | The name Grafana is served at over HTTPS (Caddy, Let's Encrypt). Null: no ingress at all; reach Grafana through a Session Manager port forward. | `string` | `null` | no |
 | extra\_alert\_rules | More alert rules: a name to a Grafana alerting provisioning document (YAML), provisioned as rules-extra-<name>.json. Every rule needs labels area (host, pipeline or cost) and severity (warning or critical). To remove a rule, keep its uid under deleteRules in the same document. | `map(string)` | `{}` | no |
