@@ -289,4 +289,39 @@ views_config
 sync || fail "the_workspace_tag_is_the_callers: the run back failed"
 echo "cost sync (postgres): the_workspace_tag_is_the_callers"
 
+# a_run_matches_its_cost_rows_in_any_tag_key_form
+expect key_forms "billed per run" "$(at "$now" "select string_agg(round(billed_cost::numeric, 2)::text, ',' order by run_key) from cost.task_run_costs")" "4.80,1.70,0.00,16.00"
+echo "cost sync (postgres): a_run_matches_its_cost_rows_in_any_tag_key_form"
+
+# a_finished_run_shows_its_bill
+expect finished "R1" "$(at "$now" "select concat_ws(' ', source, outcome, estimated, round(cost::numeric, 2), hours, gpu_hours, round(on_demand_cost::numeric, 2), round(ceiling_percent::numeric, 2), round(cost_per_gpu_hour::numeric, 2), pr, commit) from cost.runs where run_key = 'RunId=100-1;TaskId=net-v12'")" "record passed f 4.80 5 5 10.00 9.60 0.96 #88 a1b2c3d"
+echo "cost sync (postgres): a_finished_run_shows_its_bill"
+
+# a_run_is_estimated_until_its_last_day_is_complete
+expect estimated "R2 now" "$(at "$now" "select concat_ws(' ', estimated, round(cost::numeric, 2), round(billed_cost::numeric, 2)) from cost.runs where run_key = 'RunId=101-1;TaskId=net-v12'")" "t 2.00 1.70"
+expect estimated "R2 later" "$(at '2026-11-23T12:00:00Z' "select concat_ws(' ', estimated, round(cost::numeric, 2), round(billed_cost::numeric, 2)) from cost.runs where run_key = 'RunId=101-1;TaskId=net-v12'")" "f 1.70 1.70"
+echo "cost sync (postgres): a_run_is_estimated_until_its_last_day_is_complete"
+
+# a_running_run_is_estimated_to_now
+expect running "R3" "$(at "$now" "select concat_ws(' ', outcome, estimated, hours, round(cost::numeric, 2), gpu_hours, coalesce(cost_per_gpu_hour::text, 'null')) from cost.runs where run_key = 'RunId=102-1;TaskId=datagen'")" "running t 6 3.00 0 null"
+echo "cost sync (postgres): a_running_run_is_estimated_to_now"
+
+# a_swept_run_ends_when_it_was_swept
+expect swept "R4" "$(at "$now" "select concat_ws(' ', outcome, ended_at, hours, round(cost::numeric, 2), round(ceiling_percent::numeric, 2)) from cost.runs where run_key = 'RunId=103-1;TaskId=probe'")" "swept 2026-11-10 08:00:00+00 8 16.00 80.00"
+echo "cost sync (postgres): a_swept_run_ends_when_it_was_swept"
+
+# a_run_without_a_record_is_built_from_its_tags
+expect tag_only "R5" "$(at "$now" "select concat_ws(' ', source, workflow, profile, campaign, hours, round(cost::numeric, 2)) from cost.runs where run_key = 'RunId=99-1;TaskId=old'")" "tags train gpu net-v11 3.5 7.00"
+echo "cost sync (postgres): a_run_without_a_record_is_built_from_its_tags"
+
+# a_recorded_run_appears_once
+expect once "R1" "$(at "$now" "select count(*) from cost.runs where run_key = 'RunId=100-1;TaskId=net-v12'")" 1
+expect once "all runs" "$(at "$now" "select count(*) from cost.runs")" 5
+echo "cost sync (postgres): a_recorded_run_appears_once"
+
+# campaigns_add_up_their_runs
+expect campaigns "net-v12" "$(at "$now" "select concat_ws(' ', project, runs, passed, failed, interrupted, instance_hours, gpu_hours, round(cost::numeric, 2), round(on_demand_cost::numeric, 2), round(saved::numeric, 2), round(saved_percent::numeric, 2), round(cost_per_passed_run::numeric, 2)) from cost.campaigns where campaign = 'net-v12'")" "braveheart-trainer 2 1 0 1 7 7 6.80 14.00 7.20 51.43 6.80"
+expect campaigns "net-v11" "$(at "$now" "select coalesce(cost_per_passed_run::text, 'null') from cost.campaigns where campaign = 'net-v11'")" null
+echo "cost sync (postgres): campaigns_add_up_their_runs"
+
 echo "cost sync (postgres): OK"
