@@ -49,7 +49,7 @@ period's newest delivery is the one to use.
 ```hcl
 module "aws_billing_export" {
   source  = "Jaws-Platform/jaws-monitoring/aws//modules/aws-billing-export"
-  version = "0.7.0" # x-release-please-version
+  version = "0.8.0" # x-release-please-version
 
   name                    = "acme-focus-daily"
   bucket_name             = "acme-billing"
