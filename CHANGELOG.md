@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.4.0...v0.5.0) (2026-11-22)
+
+
+### Features
+
+* load the cost data onto the monitoring node and watch its pipeline ([#10](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/issues/10)) ([fe0587a](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/commit/fe0587a915dc226c710078fadc0bd9bc15da8cc3))
+
 ## [0.4.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.3.0...v0.4.0) (2026-11-22)
 
 
