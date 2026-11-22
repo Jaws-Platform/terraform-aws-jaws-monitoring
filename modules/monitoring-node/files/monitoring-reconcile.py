@@ -201,6 +201,18 @@ class Reconciler:
         link.symlink_to(release)
         os.replace(link, self.current)
 
+    def start_cost_sync(self, release: Path) -> None:
+        """A release can add views the cost rules read: cost-sync builds them now,
+        not at its next tick, up to 30 minutes on with every cost rule failing.
+        Best effort: the timer still runs it."""
+        if not (release / "cost-sync/monitoring-cost-sync.py").exists():
+            return
+        result = subprocess.run(["systemctl", "start", "--no-block", "monitoring-cost-sync.service"],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"monitoring-reconcile: couldn't start cost-sync: {result.stderr.strip() or result.returncode}",
+                  file=sys.stderr)
+
     def reset_admin_password(self, release: Path, values: Dict[str, str]) -> None:
         if not self.compose(release, values, "exec", "-T", "grafana", "grafana", "cli", "admin",
                             "reset-admin-password", "--password-from-stdin", stdin=values[ADMIN_PASSWORD]):
@@ -226,6 +238,7 @@ class Reconciler:
         self.swap(release, values)
         if not self.compose(release, values, "up", "-d", "--remove-orphans"):
             raise Failed("up")
+        self.start_cost_sync(release)
         rotated = previous is not None and ADMIN_PASSWORD in values and previous.get(ADMIN_PASSWORD) != values[ADMIN_PASSWORD]
         if rotated:
             self.reset_admin_password(release, values)
