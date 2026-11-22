@@ -39,12 +39,14 @@ printf '%s' "$reader_password" > "$root/data/secrets/COST_READER_PASSWORD"
 printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$here/fake_aws_s3.py" > "$scratch/bin/aws"
 chmod +x "$scratch/bin/aws"
 
+# The image first runs a temporary server on its socket only, to initialise;
+# waiting on TCP waits for the real one.
 docker run -d --name "$container" -e POSTGRES_USER=monitoring -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=grafana "$image" > /dev/null
 for _ in $(seq 1 60); do
-  docker exec "$container" pg_isready -U monitoring -d grafana > /dev/null 2>&1 && break
+  docker exec "$container" pg_isready -h 127.0.0.1 -U monitoring -d grafana > /dev/null 2>&1 && break
   sleep 1
 done
-docker exec "$container" pg_isready -U monitoring -d grafana > /dev/null 2>&1 || fail "postgres didn't start"
+docker exec "$container" pg_isready -h 127.0.0.1 -U monitoring -d grafana > /dev/null 2>&1 || fail "postgres didn't start"
 
 # The fixtures' runs are from 2026-11-20: judge them as of the next day.
 export MONITORING_NOW=1795262400 # 2026-11-21T12:00:00Z

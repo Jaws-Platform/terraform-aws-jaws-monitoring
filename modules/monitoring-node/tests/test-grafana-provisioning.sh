@@ -145,7 +145,7 @@ start_postgres() {
   docker run -d --name "$postgres" --network "$network" --network-alias postgres \
     -e POSTGRES_USER=monitoring -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=grafana "$postgres_image" > /dev/null
   for _ in $(seq 1 60); do
-    docker exec "$postgres" pg_isready -U monitoring -d grafana > /dev/null 2>&1 && break
+    docker exec "$postgres" pg_isready -h 127.0.0.1 -U monitoring -d grafana > /dev/null 2>&1 && break
     sleep 1
   done
   local node="$scratch/cost-node"
