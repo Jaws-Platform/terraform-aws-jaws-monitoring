@@ -28,3 +28,25 @@ INSERT INTO cost.lines (key, provider, period, provider_name, sub_account_id, su
 SELECT 'test/model', 'aws', '2026-11', 'AWS', '570327089884', 'production', d, 'Usage',
        'Amazon Virtual Private Cloud', 0.6, '{}', NULL
 FROM generate_series('2026-11-05T00:00:00Z'::timestamptz, '2026-11-21T00:00:00Z', interval '1 day') AS d;
+
+-- dbx (Databricks, a day behind AWS): $3 a day from Nov 1 to Nov 19, then a $40
+-- spike on Nov 20; Databricks has no Nov 21 yet.
+INSERT INTO cost.lines (key, provider, period, provider_name, sub_account_id, sub_account_name, charge_period_start,
+                        charge_category, service_name, billed_cost, tags, project)
+SELECT 'test/model', 'databricks', '2026-11', 'Databricks', 'ws-1', 'jaws-shared', d, 'Usage', 'Databricks JOBS',
+       CASE WHEN d = '2026-11-20T00:00:00Z' THEN 40 ELSE 3 END, '{"Project": "dbx"}', 'dbx'
+FROM generate_series('2026-11-01T00:00:00Z'::timestamptz, '2026-11-20T00:00:00Z', interval '1 day') AS d;
+
+-- An untagged charge that starts late on Nov 20 ($0.20 that day) and runs all of Nov 21 ($1.20).
+INSERT INTO cost.lines (key, provider, period, provider_name, sub_account_id, sub_account_name, charge_period_start,
+                        charge_category, service_name, billed_cost, tags, project)
+VALUES ('test/model', 'aws', '2026-11', 'AWS', '570327089884', 'production', '2026-11-20T00:00:00Z', 'Usage',
+        'Amazon CloudWatch', 0.2, '{}', NULL),
+       ('test/model', 'aws', '2026-11', 'AWS', '570327089884', 'production', '2026-11-21T00:00:00Z', 'Usage',
+        'Amazon CloudWatch', 1.2, '{}', NULL);
+
+-- A month-long untagged charge dated to its start (a support plan): spent, but no day's spend.
+INSERT INTO cost.lines (key, provider, period, provider_name, sub_account_id, sub_account_name, charge_period_start,
+                        charge_period_end, charge_category, service_name, billed_cost, tags, project)
+VALUES ('test/model', 'aws', '2026-11', 'AWS', '570327089884', 'production', '2026-11-21T00:00:00Z',
+        '2026-12-21T00:00:00Z', 'Usage', 'AWS Support (Business)', 29, '{}', NULL);

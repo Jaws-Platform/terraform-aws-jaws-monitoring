@@ -1364,3 +1364,56 @@ run "cost_thresholds_reach_the_rules" {
     error_message = "the cost thresholds reach the rules; budgets alert past 100 %"
   }
 }
+
+run "cost_alerts_post_once_then_weekly" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost  = { providers = ["aws"] }
+    slack = { channels = { platform = "/acme/monitoring/slack/platform", costs = "/acme/monitoring/slack/costs" }, routes = { host = "platform", cost = "costs" } }
+  }
+
+  assert {
+    condition     = jsonencode([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : [r.receiver, lookup(r, "repeat_interval", "")] if jsonencode(r.object_matchers) == jsonencode([["area", "=", "cost"]])]) == jsonencode([["slack-costs", "168h"]])
+    error_message = "a breached budget stays breached, a judged day stays judged: the cost alerts post once, then weekly, to the cost channel"
+  }
+}
+
+run "cost_alerts_fall_back_to_the_host_channel" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost  = { providers = ["aws"] }
+    slack = { channels = { platform = "/acme/monitoring/slack/platform" }, routes = { host = "platform" } }
+  }
+
+  assert {
+    condition     = length([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : r if jsonencode(r.object_matchers) == jsonencode([["area", "=", "cost"]]) && r.receiver == "slack-platform" && r.repeat_interval == "168h"]) == 1
+    error_message = "with no cost channel, the cost alerts go to the host channel, still weekly"
+  }
+}
+
+run "cost_rules_judge_each_recent_day_and_each_new_pair" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws"] }
+  }
+
+  assert {
+    condition     = strcontains(one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-anomaly-warning"]).data : d if d.refId == "A"]).model.rawSql, "day::text AS day") && strcontains(one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-untagged-new-warning"]).data : d if d.refId == "A"]).model.rawSql, "WHERE is_new")
+    error_message = "each judged day is its own alert, and an untagged pair is new on its first or second day"
+  }
+}

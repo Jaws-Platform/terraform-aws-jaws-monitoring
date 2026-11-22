@@ -253,16 +253,17 @@ sudo docker exec -it monitoring-postgres-1 psql -U monitoring -d cost
 | `cost.task_runs` | one row per run: its launch metadata, `started_at`, `ended_at`, `outcome` (`swept`, or null while running) |
 | `cost.task_run_costs` | each run's billed cost: the cost rows that carry its join tags |
 | `cost.loads`, `cost.normalizer_runs` | what was loaded, and the normalizer runs seen |
-| `cost.daily` | spend per UTC day, provider, account, project (`(untagged)` without one), environment, service and charge category, with whether the day is `complete` |
+| `cost.daily` | spend per UTC day, provider, account, project (`(untagged)` without one), environment, service and charge category, with whether the day is `complete` and whether it is a `long_period` charge |
 | `cost.month_to_date` | per scope (`total`, each project, each account): month to date, the forecast, the budget, and both as a share of it |
-| `cost.anomalies` | the newest day's spend per total, project and service against the median of the 14 complete days before it |
-| `cost.untagged`, `cost.untagged_new` | untagged spend (tax and credits aside), and the newest day's pairs with none in the 14 days before |
+| `cost.anomalies` | each of the last three days' spend per total, project and service against the median of the 14 complete days before it |
+| `cost.untagged`, `cost.untagged_new` | untagged spend (tax and credits aside), and each account and service's first untagged day and spend since; `is_new` when that day is the newest or the day before |
 | `cost.budgets`, `cost.as_of` | the budgets from the `cost` input (rewritten every run), and the newest complete day |
 
 **Days and the forecast.**
 
 - Days are UTC calendar days, because AWS bills in UTC. A day is complete 48 hours after it ends; until then its charges are still arriving.
-- The month-end forecast is the month's complete days, plus the last 7 complete days' average for every day still to come. A partial day is replaced by the average, not counted short.
+- The month-end forecast is the month's complete days, plus, for every day not complete yet, what it has so far or the last 7 complete days' average, whichever is more. It is never below what's already spent.
+- A charge for more than a day (a monthly fee, a support plan, often tax) is dated to its period's start. It counts as spent and in the forecast, but not as a day's spend: the average, the anomalies and new untagged spend leave it out, so the 1st of a month isn't an anomaly.
 
 **The pipeline alerts** (label `area = pipeline`, on the host dashboard's
 Pipeline row):
@@ -288,12 +289,14 @@ SQL on the cost database, one alert per row:
 |---|---|---|---|
 | Budget: month-end forecast | over 100 % of a budget | | `cost.budgets` |
 | Budget: month to date | | over 100 % of a budget | `cost.budgets` |
-| Daily spend anomaly (the total and each project): the newest day against the median of its 14 complete days before, and over `anomaly_floor_usd` above it | 2× | 4× | `thresholds.anomaly_ratio`, `cost.anomaly_floor_usd` |
-| New untagged spend: an account and service with none in the 14 days before | over $0.50 | | `thresholds.untagged_daily_usd` |
+| Daily spend anomaly (the total and each project): each of the last three days with data against the median of its 14 complete days before, and over `anomaly_floor_usd` above it. One alert per day judged, so a provider that reports a day late (Databricks) is judged when its day lands | 2× | 4× | `thresholds.anomaly_ratio`, `cost.anomaly_floor_usd` |
+| New untagged spend: an account and service with none in the 14 days before, over the threshold since it started (on the newest day or the day before, so a charge that starts late in a day still counts its next whole day) | over $0.50 | | `thresholds.untagged_daily_usd` |
 
-A planned expensive run will trip the anomaly alert: silence it first (see
-Silences). A brand-new project has no median, so only the total can alert on
-its first days.
+Each cost alert posts once when it fires, then weekly while it lasts, to the
+`cost` route's channel (or `host`'s): a breached budget stays breached all
+month. A planned expensive run will trip the anomaly alert: silence it first
+(see Silences). A project that spent on fewer than half of its 14 days has a
+median of 0, so only the total can alert on its spending.
 
 **Cost · Overview** (folder `Cost`) shows the last 90 days, filtered by
 provider, account, project and environment. Tiles across the top: month to
