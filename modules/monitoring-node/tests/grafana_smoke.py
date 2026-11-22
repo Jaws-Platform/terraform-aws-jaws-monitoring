@@ -66,6 +66,8 @@ def rendered(release: Path) -> dict:
         "templates": sorted(templates),
         "root_receiver": policies[0]["receiver"] if policies else None,
         "reset_policies": reset,
+        "mute_timings": sorted(m["name"] for d in docs.values() for m in d.get("muteTimes", [])),
+        "muted_routes": sum(1 for p in policies for r in p.get("routes", []) if r.get("mute_time_intervals")),
     }
 
 
@@ -122,6 +124,8 @@ def observed(url: str, auth: str) -> dict:
         "contact_points": sorted({c["name"] for c in api(url, auth, "/api/v1/provisioning/contact-points")}),
         "templates": sorted(t["name"] for t in api(url, auth, "/api/v1/provisioning/templates")),
         "root_receiver": policy.get("receiver"),
+        "mute_timings": sorted(m["name"] for m in api(url, auth, "/api/v1/provisioning/mute-timings")),
+        "muted_routes": sum(1 for r in policy.get("routes") or [] if r.get("mute_time_intervals")),
     }
 
 
@@ -234,7 +238,7 @@ def cost_rule_problems(release: Path, url: str, auth: str) -> list:
 
 def problems(want: dict, got: dict) -> list:
     found = []
-    for key in ("rules", "dashboards", "datasources"):
+    for key in ("rules", "dashboards", "datasources", "mute_timings", "muted_routes"):
         if want[key] != got[key]:
             found.append(f"{key}: rendered {want[key]}, Grafana has {got[key]}")
     duplicated = sorted({f for f in got["folders"] if got["folders"].count(f) > 1})
@@ -279,7 +283,8 @@ def compare(release: str, url: str, user: str, password: str, phase: str) -> Non
         print(f"grafana smoke ({phase}): every cost dashboard query runs on the cost database")
         print(f"grafana smoke ({phase}): every cost rule fires on its rows in Grafana's own evaluation")
     print(f"grafana smoke ({phase}): {len(want['rules'])} rules, {len(want['dashboards'])} dashboards, "
-          f"{len(want['contact_points'])} contact points, root receiver {want['root_receiver'] or 'default'} - as rendered")
+          f"{len(want['contact_points'])} contact points, root receiver {want['root_receiver'] or 'default'}, "
+          f"{len(want['mute_timings'])} mute timings on {want['muted_routes']} routes - as rendered")
 
 
 def main(argv: list) -> None:

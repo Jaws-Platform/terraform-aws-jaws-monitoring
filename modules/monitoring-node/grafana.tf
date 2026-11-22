@@ -10,6 +10,7 @@ module "grafana" {
   domain            = var.domain
   thresholds        = var.thresholds
   slack             = var.slack
+  schedule          = var.schedule
   cost              = var.cost == null ? null : { providers = var.cost.providers, anomaly_floor_usd = var.cost.anomaly_floor_usd, databricks_workspace_tag = var.cost.databricks_workspace_tag }
   extra_dashboards  = var.extra_dashboards
   extra_alert_rules = var.extra_alert_rules

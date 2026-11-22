@@ -1724,3 +1724,50 @@ run "the_tasks_board_needs_cost" {
     error_message = "a host-only node has no tasks dashboard"
   }
 }
+
+run "a_schedule_mutes_the_first_15_minutes" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost     = { providers = ["aws"] }
+    slack    = { channels = { platform = "/acme/monitoring/slack/platform" }, routes = { host = "platform" } }
+    schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = jsonencode(jsondecode(output.files["grafana/provisioning/alerting/mute-timings.json"]).muteTimes) == jsonencode([{ orgId = 1, name = "after-scheduled-start", time_intervals = [{ times = [{ start_time = "08:00", end_time = "08:15" }], weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"], location = "America/Denver" }] }])
+    error_message = "the first 15 minutes after each scheduled start are muted, in the schedule's time zone"
+  }
+
+  assert {
+    condition     = length(one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes) > 0 && alltrue([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : jsonencode(try(r.mute_time_intervals, [])) == jsonencode(["after-scheduled-start"])])
+    error_message = "every route is muted then"
+  }
+
+  assert {
+    condition     = alltrue([for area in ["host", "pipeline", "cost"] : length([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : r if jsonencode(r.object_matchers) == jsonencode([["area", "=", area]])]) == 1])
+    error_message = "every area has its own route, so no alert falls through to the unmuted root"
+  }
+}
+
+run "without_a_schedule_nothing_is_muted" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost  = { providers = ["aws"] }
+    slack = { channels = { platform = "/acme/monitoring/slack/platform" }, routes = { host = "platform" } }
+  }
+
+  assert {
+    condition     = alltrue([for r in one(jsondecode(output.files["grafana/provisioning/alerting/policies.json"]).policies).routes : try(r.mute_time_intervals, null) == null])
+    error_message = "with no schedule, no route is muted"
+  }
+}

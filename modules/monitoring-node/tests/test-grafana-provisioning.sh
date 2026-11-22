@@ -84,6 +84,7 @@ $thresholds
     routes   = { host = "platform", pipeline = "platform", cost = "costs" }
   }
   cost = { providers = ["aws", "databricks"] }
+  schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
   extra_dashboards  = { "Extra/extra.json" = file("$here/fixtures/extra-dashboard.json") }
   extra_alert_rules = {
     smoke = file("$here/fixtures/extra-rule.yaml")
