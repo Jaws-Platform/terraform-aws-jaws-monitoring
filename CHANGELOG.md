@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.5.0...v0.6.0) (2026-11-22)
+
+
+### Features
+
+* add the cost model, the cost alerts and the cost overview to the monitoring node ([#12](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/issues/12)) ([1657654](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/commit/16576548b51c1a16a2ac3db30e0eed876758c2cb))
+
 ## [0.5.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.4.0...v0.5.0) (2026-11-22)
 
 
