@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.7.0...v0.8.0) (2026-11-22)
+
+
+### Features
+
+* **monitoring-node:** add an off-hours schedule, a watchdog, and the root module ([#17](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/issues/17)) ([f97c840](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/commit/f97c840ca9a1845ff9ec46311c5926cf6adfdd08))
+
 ## [0.7.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.6.0...v0.7.0) (2026-11-22)
 
 
