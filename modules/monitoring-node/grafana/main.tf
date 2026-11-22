@@ -56,8 +56,10 @@ locals {
   dashboards        = merge(local.module_dashboards, var.extra_dashboards)
 
   # Alerting provisioning files the module renders: path => document (an
-  # object, encoded below). The host rules come in a later task.
-  module_alerting = {}
+  # object, encoded below).
+  module_alerting = {
+    "grafana/provisioning/alerting/rules-host.json" = local.host_rules_file
+  }
 
   extra_rules_path = { for name, _ in var.extra_alert_rules : name => "grafana/provisioning/alerting/rules-extra-${name}.json" }
 
