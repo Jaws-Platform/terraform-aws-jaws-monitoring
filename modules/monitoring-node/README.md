@@ -409,7 +409,7 @@ click filters to one), one row per run, spend by workflow, and efficiency.
 ```hcl
 module "monitoring_node" {
   source  = "Jaws-Platform/jaws-monitoring/aws//modules/monitoring-node"
-  version = "0.8.0" # x-release-please-version
+  version = "0.8.1" # x-release-please-version
 
   name      = "acme-monitoring"
   vpc_id    = "vpc-0123456789abcdef0"
