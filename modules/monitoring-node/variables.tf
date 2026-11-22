@@ -111,3 +111,25 @@ variable "images" {
   type        = map(string)
   default     = {}
 }
+
+variable "extra_dashboards" {
+  description = "More dashboards to provision: \"<Folder>/<name>.json\" (the folder is created in Grafana) to the dashboard's JSON, which needs a uid and a title."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for path in keys(var.extra_dashboards) : can(regex("^[A-Za-z0-9 _-]+/[a-z0-9-]+\\.json$", path))])
+    error_message = "Each extra_dashboards key is \"<Folder>/<name>.json\": a folder of letters, digits, spaces, _ or -, and a lowercase name."
+  }
+}
+
+variable "extra_alert_rules" {
+  description = "More alert rules: a name to a Grafana alerting provisioning document (YAML), provisioned as rules-extra-<name>.json. Every rule needs labels area (host, pipeline or cost) and severity (warning or critical). To remove a rule, keep its uid under deleteRules in the same document."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.extra_alert_rules) : can(regex("^[a-z0-9-]+$", name))])
+    error_message = "Each extra_alert_rules key is lowercase letters, digits and -."
+  }
+}

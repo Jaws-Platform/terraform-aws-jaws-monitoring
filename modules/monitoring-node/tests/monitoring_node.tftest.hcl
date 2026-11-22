@@ -448,3 +448,37 @@ run "mounts_resolve_through_the_stable_current_link" {
     error_message = "no mount is relative to the release folder"
   }
 }
+
+run "the_bundle_carries_grafanas_files" {
+  command = plan
+
+  assert {
+    condition     = alltrue([for path, content in module.grafana.files : try(local.bundle.files[path] == content, false)])
+    error_message = "every file the Grafana config module renders goes into the bundle unchanged"
+  }
+
+  assert {
+    condition     = !contains(keys(local.bundle.files), "grafana/dashboards/.keep")
+    error_message = "the dashboards folder no longer needs a placeholder"
+  }
+}
+
+run "rejects_an_extra_dashboard_outside_a_folder" {
+  command = plan
+
+  variables {
+    extra_dashboards = { "extra.json" = "{\"uid\": \"x\", \"title\": \"X\"}" }
+  }
+
+  expect_failures = [var.extra_dashboards]
+}
+
+run "rejects_an_extra_rules_name_grafana_cant_file" {
+  command = plan
+
+  variables {
+    extra_alert_rules = { "My Rules" = "apiVersion: 1" }
+  }
+
+  expect_failures = [var.extra_alert_rules]
+}

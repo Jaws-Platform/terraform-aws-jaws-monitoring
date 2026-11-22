@@ -2,12 +2,11 @@
 # node's reconciler installs. Each file is built here as HCL and encoded, so the
 # tests can decode and check it.
 #
-#   compose.yaml                                     the services
-#   prometheus/prometheus.yml                        what Prometheus scrapes
-#   grafana/provisioning/datasources/datasources.yaml
-#   grafana/provisioning/dashboards/dashboards.yaml  the dashboard folder
-#   grafana/dashboards/                              (plan 05 adds dashboards)
-#   caddy/Caddyfile, blackbox/blackbox.yml           with a domain only
+#   compose.yaml                             the services
+#   prometheus/prometheus.yml                what Prometheus scrapes
+#   grafana/...                              data sources, dashboards, alerting
+#                                            (the grafana module, grafana.tf)
+#   caddy/Caddyfile, blackbox/blackbox.yml   with a domain only
 #
 # secrets are SSM parameters the reconciler reads; generated values it makes
 # once on the node. compose.yaml refers to both as $${NAME:?}, so a value the
@@ -63,41 +62,6 @@ locals {
     )
   })
 
-  datasources = yamlencode({
-    apiVersion = 1
-    datasources = [
-      {
-        name      = "Prometheus"
-        uid       = "prometheus"
-        type      = "prometheus"
-        access    = "proxy"
-        url       = "http://prometheus:9090"
-        isDefault = true
-        jsonData  = { timeInterval = "15s" }
-      },
-      {
-        name     = "CloudWatch"
-        uid      = "cloudwatch"
-        type     = "cloudwatch"
-        access   = "proxy"
-        jsonData = { authType = "default", defaultRegion = local.region }
-      },
-    ]
-  })
-
-  dashboard_providers = yamlencode({
-    apiVersion = 1
-    providers = [{
-      name                  = "monitoring"
-      orgId                 = 1
-      type                  = "file"
-      disableDeletion       = true
-      allowUiUpdates        = false
-      updateIntervalSeconds = 60
-      options               = { path = "/var/lib/grafana/dashboards", foldersFromFilesStructure = true }
-    }]
-  })
-
   blackbox_config = yamlencode({
     modules = {
       http_2xx = {
@@ -114,17 +78,12 @@ locals {
   }) : ""
 
   bundle_files = merge(
-    {
-      "prometheus/prometheus.yml"                         = local.prometheus_config
-      "grafana/provisioning/datasources/datasources.yaml" = local.datasources
-      "grafana/provisioning/dashboards/dashboards.yaml"   = local.dashboard_providers
-      "grafana/dashboards/.keep"                          = ""
-    },
+    { "prometheus/prometheus.yml" = local.prometheus_config },
     local.served ? {
       "caddy/Caddyfile"       = local.caddyfile
       "blackbox/blackbox.yml" = local.blackbox_config
     } : {},
-    local.extra_bundle_files,
+    module.grafana.files,
   )
 
   # What each service mounts, hashed into its label so `compose up -d`

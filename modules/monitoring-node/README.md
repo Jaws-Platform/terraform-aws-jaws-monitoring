@@ -133,7 +133,9 @@ module "monitoring_node" {
 
 ## Modules
 
-No modules.
+| Name | Source | Version |
+| ---- | ------ | ------- |
+| grafana | ./grafana | n/a |
 
 ## Resources
 
@@ -179,6 +181,8 @@ No modules.
 | acme\_email | Optional contact address for Let's Encrypt. | `string` | `null` | no |
 | data\_volume\_gb | Size of the data volume: Prometheus, Postgres, Grafana and Caddy's state, kept when the instance is replaced. | `number` | `30` | no |
 | domain | The name Grafana is served at over HTTPS (Caddy, Let's Encrypt). Null: no ingress at all; reach Grafana through a Session Manager port forward. | `string` | `null` | no |
+| extra\_alert\_rules | More alert rules: a name to a Grafana alerting provisioning document (YAML), provisioned as rules-extra-<name>.json. Every rule needs labels area (host, pipeline or cost) and severity (warning or critical). To remove a rule, keep its uid under deleteRules in the same document. | `map(string)` | `{}` | no |
+| extra\_dashboards | More dashboards to provision: "<Folder>/<name>.json" (the folder is created in Grafana) to the dashboard's JSON, which needs a uid and a title. | `map(string)` | `{}` | no |
 | images | Container images to use instead of the module's digest-pinned defaults, by service name (see the README). | `map(string)` | `{}` | no |
 | instance\_type | The instance type, arm64 (Graviton). A T type runs with standard CPU credits, so a burst never bills extra; watch its credit balance. | `string` | `"t9g.medium"` | no |
 | prometheus\_retention | How long Prometheus keeps metrics, and the size it never grows past (the oldest data is dropped first). Keep size\_gb well under data\_volume\_gb. | <pre>object({<br/>    time    = optional(string, "365d")<br/>    size_gb = optional(number, 12)<br/>  })</pre> | `{}` | no |
