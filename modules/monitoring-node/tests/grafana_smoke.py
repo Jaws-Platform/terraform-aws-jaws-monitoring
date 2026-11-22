@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import sys
 import time
@@ -172,6 +173,43 @@ def cost_query_problems(release: Path, url: str, auth: str) -> list:
     return found
 
 
+def cost_rule_problems(release: Path, url: str, auth: str) -> list:
+    """Grafana evaluates each cost rule on the rows the smoke test loaded, and each
+    finds what SMOKE_COST_EXPECT says: table results, one instance per row,
+    labelled by its string columns (spec 12.7)."""
+    expected = json.loads(os.environ.get("SMOKE_COST_EXPECT", "{}"))
+    rules = {r["uid"]: r for d in alerting_docs(release).values() for g in d.get("groups", []) for r in g.get("rules", [])}
+    found = []
+    for uid, labels in expected.items():
+        rule = rules.get(uid)
+        if rule is None:
+            found.append(f"cost rule: {uid} isn't rendered")
+            continue
+        body = json.dumps({"condition": rule["condition"], "data": rule["data"]}).encode()
+        request = urllib.request.Request(url + "/api/v1/eval", data=body, method="POST",
+                                         headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                results = json.loads(response.read())["results"]
+        except urllib.error.HTTPError as error:
+            found.append(f"cost rule: {uid}: eval failed: {error.read().decode(errors='replace')[:300]}")
+            continue
+        if results.get("A", {}).get("error"):
+            found.append(f"cost rule: {uid}: its query failed: {results['A']['error']}")
+            continue
+        firing = []
+        for frame in results.get(rule["condition"], {}).get("frames", []):
+            frame_labels = {}
+            for field in frame.get("schema", {}).get("fields", []):
+                frame_labels.update(field.get("labels") or {})
+            values = [v for column in frame.get("data", {}).get("values", []) for v in column]
+            if any(v == 1 for v in values):
+                firing.append(frame_labels)
+        if not any(all(f.get(k) == v for k, v in labels.items()) for f in firing):
+            found.append(f"cost rule: {uid} doesn't fire for {labels}; firing: {firing}")
+    return found
+
+
 def problems(want: dict, got: dict) -> list:
     found = []
     for key in ("rules", "dashboards", "datasources"):
@@ -204,7 +242,8 @@ def compare(release: str, url: str, user: str, password: str, phase: str) -> Non
         try:
             found = problems(want, observed(url, auth))
             if not found and "cost" in want["datasources"]:
-                found = cost_problems(url, auth) or cost_query_problems(Path(release), url, auth)
+                found = cost_problems(url, auth) or cost_query_problems(Path(release), url, auth) \
+                    or cost_rule_problems(Path(release), url, auth)
         except (urllib.error.URLError, OSError, ValueError) as error:
             found = [f"api: {error}"]
         if not found:
@@ -216,6 +255,7 @@ def compare(release: str, url: str, user: str, password: str, phase: str) -> Non
         time.sleep(3)
     if "cost" in want["datasources"]:
         print(f"grafana smoke ({phase}): every cost dashboard query runs on the cost database")
+        print(f"grafana smoke ({phase}): every cost rule fires on its rows in Grafana's own evaluation")
     print(f"grafana smoke ({phase}): {len(want['rules'])} rules, {len(want['dashboards'])} dashboards, "
           f"{len(want['contact_points'])} contact points, root receiver {want['root_receiver'] or 'default'} - as rendered")
 

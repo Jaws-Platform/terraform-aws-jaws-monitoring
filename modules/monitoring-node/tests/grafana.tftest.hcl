@@ -1272,3 +1272,95 @@ run "the_budget_and_anomaly_panels_state_their_numbers" {
     error_message = "the movers table states the anomaly thresholds"
   }
 }
+
+run "cost_rules_run_sql_on_the_cost_database" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = length(flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules])) == 5 && alltrue([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : one([for d in r.data : d if d.refId == "A"]).datasourceUid == "cost" && one([for d in r.data : d if d.refId == "A"]).model.format == "table" && strcontains(one([for d in r.data : d if d.refId == "A"]).model.rawSql, "FROM cost.")])
+    error_message = "all five cost rules are SQL on the cost database, in table form"
+  }
+
+  assert {
+    condition     = strcontains(one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-anomaly-warning"]).data : d if d.refId == "A"]).model.rawSql, "excess > 2")
+    error_message = "the anomaly rule carries the default floor"
+  }
+
+  assert {
+    condition     = alltrue([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r.labels.area == "cost" && endswith(r.for, "m") && tonumber(trimsuffix(r.for, "m")) >= 2]) && jsonencode([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : { name = gr.name, folder = gr.folder, interval = gr.interval }]) == jsonencode([{ name = "cost", folder = "Cost", interval = "5m" }])
+    error_message = "area cost, at least 2 minutes, in the Cost folder every 5 minutes"
+  }
+}
+
+run "the_anomaly_floor_reaches_the_rule" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws"], anomaly_floor_usd = 5 }
+  }
+
+  assert {
+    condition     = strcontains(one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-anomaly-critical"]).data : d if d.refId == "A"]).model.rawSql, "excess > 5")
+    error_message = "the anomaly floor is the caller's"
+  }
+}
+
+run "cost_rules_link_the_overview" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost = { providers = ["aws", "databricks"] }
+  }
+
+  assert {
+    condition     = alltrue([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r.annotations.__dashboardUid__ == "cost-overview" && length([for p in jsondecode(output.files["grafana/dashboards/Cost/overview.json"]).panels : p if tostring(p.id) == r.annotations.__panelId__]) == 1])
+    error_message = "each cost rule links its Overview panel"
+  }
+}
+
+run "the_cost_rules_need_cost" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = length(flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules])) == 0 && length([for d in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).deleteRules : d.uid]) == 5
+    error_message = "without cost, every cost rule is deleted"
+  }
+}
+
+run "cost_thresholds_reach_the_rules" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    cost       = { providers = ["aws", "databricks"] }
+    thresholds = merge(var.thresholds, { anomaly_ratio = { warning = 3, critical = 6 }, untagged_daily_usd = { warning = 1.5 } })
+  }
+
+  assert {
+    condition     = one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-anomaly-warning"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 3 && one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-anomaly-critical"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 6 && one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-untagged-new-warning"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 1.5 && one([for d in one([for r in flatten([for gr in jsondecode(output.files["grafana/provisioning/alerting/rules-cost.json"]).groups : gr.rules]) : r if r.uid == "cost-budget-spent-critical"]).data : d.model.conditions[0].evaluator.params[0] if d.refId == "C"]) == 100
+    error_message = "the cost thresholds reach the rules; budgets alert past 100 %"
+  }
+}

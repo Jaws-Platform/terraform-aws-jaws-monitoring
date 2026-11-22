@@ -8,7 +8,16 @@ locals {
   rule_specs = concat(
     [for s in local.host_rule_specs : merge(s, { area = "host" })],
     [for s in local.pipeline_rule_specs : merge(s, { area = "pipeline" })],
+    [for s in local.cost_rule_specs : merge(s, { area = "cost" })],
   )
+
+  # Each area's group: its folder (the folder of the dashboard it links), how
+  # often it runs, and that dashboard.
+  rule_groups = {
+    host     = { folder = "Monitoring", interval = "1m", dashboard = "monitoring-host" }
+    pipeline = { folder = "Monitoring", interval = "1m", dashboard = "monitoring-host" }
+    cost     = { folder = "Cost", interval = "5m", dashboard = "cost-overview" }
+  }
 
   rule_instances = flatten([
     for s in local.rule_specs : [
@@ -33,7 +42,7 @@ locals {
       labels       = { area = x.spec.area, severity = x.severity }
       annotations = {
         summary          = strcontains(x.spec.summary, "%v") ? format(x.spec.summary, x.value + x.spec.offset) : x.spec.summary
-        __dashboardUid__ = "monitoring-host"
+        __dashboardUid__ = local.rule_groups[x.spec.area].dashboard
         __panelId__      = tostring(x.spec.panel)
       }
     }
@@ -88,19 +97,40 @@ locals {
     }) if x.spec.source == "cloudwatch"
   }
 
-  rules_by_uid = merge(local.prometheus_rules, local.cloudwatch_rules)
+  postgres_rules = {
+    for x in local.rules_rendered : x.uid => merge(local.rule_common[x.uid], {
+      data = [
+        {
+          refId             = "A"
+          datasourceUid     = "cost"
+          relativeTimeRange = { from = 600, to = 0 }
+          model = {
+            refId      = "A"
+            datasource = { type = "grafana-postgresql-datasource", uid = "cost" }
+            rawSql     = x.spec.query
+            format     = "table"
+            editorMode = "code"
+            rawQuery   = true
+          }
+        },
+        local.threshold_step[x.uid],
+      ]
+    }) if x.spec.source == "postgres"
+  }
+
+  rules_by_uid = merge(local.prometheus_rules, local.cloudwatch_rules, local.postgres_rules)
 
   # One file per area: its group (when it has rules) and the deletion of every
   # catalogue uid it doesn't render.
   rules_files = {
-    for area in ["host", "pipeline"] : area => {
+    for area, group in local.rule_groups : area => {
       apiVersion = 1
       groups = [
         for rules in [[for x in local.rules_rendered : local.rules_by_uid[x.uid] if x.spec.area == area]] : {
           orgId    = 1
           name     = area
-          folder   = "Monitoring"
-          interval = "1m"
+          folder   = group.folder
+          interval = group.interval
           rules    = rules
         } if length(rules) > 0
       ]

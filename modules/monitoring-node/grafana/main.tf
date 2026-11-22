@@ -80,6 +80,7 @@ locals {
     {
       "grafana/provisioning/alerting/rules-host.json"     = local.rules_files.host
       "grafana/provisioning/alerting/rules-pipeline.json" = local.rules_files.pipeline
+      "grafana/provisioning/alerting/rules-cost.json"     = local.rules_files.cost
     },
     local.notification_files,
   )
