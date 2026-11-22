@@ -1,0 +1,290 @@
+# The monitoring node: one IMDSv2 instance with a separate data volume, no
+# ingress unless it serves HTTPS, a role that reads only its bundle and secrets,
+# and a config bundle named by an SSM parameter. Mock provider: nothing is called.
+
+mock_provider "aws" {
+  override_during = plan
+
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "123456789012"
+    }
+  }
+
+  mock_data "aws_region" {
+    defaults = {
+      region = "us-east-1"
+    }
+  }
+
+  mock_data "aws_subnet" {
+    defaults = {
+      availability_zone = "us-east-1a"
+    }
+  }
+
+  mock_data "aws_ami" {
+    defaults = {
+      id = "ami-0123456789abcdef0"
+    }
+  }
+
+  mock_resource "aws_instance" {
+    defaults = {
+      id        = "i-0123456789abcdef0"
+      public_ip = "198.51.100.7"
+    }
+  }
+
+  mock_resource "aws_ebs_volume" {
+    defaults = {
+      id = "vol-0123456789abcdef0"
+    }
+  }
+}
+
+variables {
+  name      = "acme-monitoring"
+  vpc_id    = "vpc-0123"
+  subnet_id = "subnet-0123"
+  ami_name  = "al2023-ami-2023.12.20261026.1-kernel-6.18-arm64"
+  grafana_admin = {
+    user_parameter     = "/acme/monitoring/grafana-admin-user"
+    password_parameter = "/acme/monitoring/grafana-admin-password"
+  }
+}
+
+run "the_instance_is_imdsv2_standard_credits_encrypted_and_public" {
+  command = plan
+
+  assert {
+    condition     = aws_instance.this.ami == "ami-0123456789abcdef0" && aws_instance.this.instance_type == "t9g.medium"
+    error_message = "the AMI comes from ami_name, and the type defaults to t9g.medium"
+  }
+
+  assert {
+    condition     = aws_instance.this.metadata_options[0].http_tokens == "required" && aws_instance.this.metadata_options[0].http_put_response_hop_limit == 2
+    error_message = "IMDSv2 only, with a hop limit of 2 so containers on the Docker bridge reach instance metadata"
+  }
+
+  assert {
+    condition     = aws_instance.this.credit_specification[0].cpu_credits == "standard"
+    error_message = "standard CPU credits: a burst never bills extra"
+  }
+
+  assert {
+    condition     = aws_instance.this.root_block_device[0].volume_type == "gp3" && aws_instance.this.root_block_device[0].encrypted && aws_instance.this.root_block_device[0].volume_size == 12
+    error_message = "a 12 GB encrypted gp3 root volume"
+  }
+
+  assert {
+    condition     = aws_instance.this.associate_public_ip_address && aws_instance.this.user_data_replace_on_change
+    error_message = "a public IPv4 address, and a new instance when the bootstrap changes"
+  }
+
+  assert {
+    condition     = aws_instance.this.tags == tomap({ Name = "acme-monitoring", Component = "monitoring" })
+    error_message = "the module sets Name and Component only"
+  }
+
+  assert {
+    condition     = data.aws_ami.this.owners == tolist(["amazon"]) && contains([for f in data.aws_ami.this.filter : one(f.values) if f.name == "name"], "al2023-ami-2023.12.20261026.1-kernel-6.18-arm64") && contains([for f in data.aws_ami.this.filter : one(f.values) if f.name == "architecture"], "arm64")
+    error_message = "the AMI is Amazon's arm64 image of exactly ami_name"
+  }
+}
+
+run "the_data_volume_is_separate_and_survives_the_instance" {
+  command = plan
+
+  assert {
+    condition     = aws_ebs_volume.data.size == 30 && aws_ebs_volume.data.type == "gp3" && aws_ebs_volume.data.encrypted && aws_ebs_volume.data.availability_zone == "us-east-1a"
+    error_message = "a 30 GB encrypted gp3 volume in the subnet's zone"
+  }
+
+  assert {
+    condition     = aws_ebs_volume.data.tags == tomap({ Name = "acme-monitoring-data", Component = "monitoring" })
+    error_message = "the data volume is named, and snapshots find it by that name"
+  }
+
+  assert {
+    condition     = aws_volume_attachment.data.device_name == "/dev/sdf" && aws_volume_attachment.data.stop_instance_before_detaching
+    error_message = "attached as /dev/sdf, and detached only from a stopped instance"
+  }
+}
+
+run "without_a_domain_nothing_is_reachable_from_outside" {
+  command = plan
+
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.web) == 0 && length(aws_route53_record.this) == 0
+    error_message = "without a domain there is no ingress and no record"
+  }
+
+  assert {
+    condition     = toset(keys(aws_vpc_security_group_egress_rule.all)) == toset(["ipv4", "ipv6"])
+    error_message = "egress is open, for pulls, updates and AWS APIs"
+  }
+
+  assert {
+    condition     = !contains([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s.Sid], "UpdateItsDnsRecord")
+    error_message = "without a domain the role touches no DNS"
+  }
+}
+
+run "with_a_domain_only_web_traffic_comes_in" {
+  command = plan
+
+  variables {
+    domain  = "grafana.example.com"
+    zone_id = "Z123"
+  }
+
+  assert {
+    condition = toset([for r in values(aws_vpc_security_group_ingress_rule.web) : "${r.from_port}/${coalesce(r.cidr_ipv4, r.cidr_ipv6)}"]) == toset([
+      "443/0.0.0.0/0", "443/::/0", "80/0.0.0.0/0", "80/::/0",
+    ])
+    error_message = "only 443 and 80 (ACME and the redirect), from anywhere"
+  }
+
+  assert {
+    condition     = aws_route53_record.this[0].type == "A" && aws_route53_record.this[0].ttl == 60 && aws_route53_record.this[0].records == toset(["198.51.100.7"]) && aws_route53_record.this[0].name == "grafana.example.com"
+    error_message = "an A record with a 60 s TTL, first set to the instance's address"
+  }
+
+  assert {
+    condition = one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "UpdateItsDnsRecord"]) == {
+      Sid      = "UpdateItsDnsRecord"
+      Effect   = "Allow"
+      Action   = "route53:ChangeResourceRecordSets"
+      Resource = "arn:aws:route53:::hostedzone/Z123"
+      Condition = {
+        "ForAllValues:StringEquals" = {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["grafana.example.com"]
+          "route53:ChangeResourceRecordSetsRecordTypes"           = ["A"]
+          "route53:ChangeResourceRecordSetsActions"               = ["UPSERT"]
+        }
+      }
+    }
+    error_message = "the node may only upsert its own A record"
+  }
+}
+
+run "the_role_reads_its_bundle_and_secrets_and_writes_its_status" {
+  command = plan
+
+  assert {
+    condition = jsondecode(aws_iam_role_policy.this.policy).Statement == [
+      {
+        Sid      = "ReadTheBundle"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "arn:aws:s3:::acme-monitoring-config-123456789012/bundles/*"
+      },
+      {
+        Sid    = "ReadTheParameters"
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = [
+          "arn:aws:ssm:us-east-1:123456789012:parameter/acme-monitoring/node/config-bundle",
+          "arn:aws:ssm:us-east-1:123456789012:parameter/acme/monitoring/grafana-admin-user",
+          "arn:aws:ssm:us-east-1:123456789012:parameter/acme/monitoring/grafana-admin-password",
+        ]
+      },
+      {
+        Sid    = "WriteTheStatus"
+        Effect = "Allow"
+        Action = "ssm:PutParameter"
+        Resource = [
+          "arn:aws:ssm:us-east-1:123456789012:parameter/acme-monitoring/node/status",
+          "arn:aws:ssm:us-east-1:123456789012:parameter/acme-monitoring/node/running-config",
+        ]
+      },
+      {
+        Sid      = "ReadMetrics"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "cloudwatch:GetMetricStatistics"]
+        Resource = "*"
+      },
+    ]
+    error_message = "the node reads its bundle, its parameters and CloudWatch metrics, and writes only its status"
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.ssm.policy_arn == "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+    error_message = "Session Manager is the only shell"
+  }
+}
+
+run "the_parameters_name_the_bundle" {
+  command = plan
+
+  assert {
+    condition     = aws_ssm_parameter.config_bundle.name == "/acme-monitoring/node/config-bundle" && aws_ssm_parameter.config_bundle.value == aws_s3_object.bundle.key && startswith(aws_s3_object.bundle.key, "bundles/") && endswith(aws_s3_object.bundle.key, ".json")
+    error_message = "the config-bundle parameter names the content-addressed bundle"
+  }
+
+  assert {
+    condition     = aws_ssm_parameter.status.name == "/acme-monitoring/node/status" && aws_ssm_parameter.running_config.name == "/acme-monitoring/node/running-config"
+    error_message = "the reconciler reports through status and running-config"
+  }
+
+  assert {
+    condition     = aws_s3_bucket.config.bucket == "acme-monitoring-config-123456789012"
+    error_message = "the config bucket is named for the node and the account"
+  }
+}
+
+run "snapshots_are_opt_in" {
+  command = plan
+
+  assert {
+    condition     = length(aws_dlm_lifecycle_policy.snapshots) == 0
+    error_message = "no snapshots unless asked for"
+  }
+}
+
+run "snapshots_when_enabled_keep_a_week" {
+  command = plan
+
+  variables {
+    snapshots = { enabled = true }
+  }
+
+  assert {
+    condition = (length(aws_dlm_lifecycle_policy.snapshots) == 1
+      && aws_dlm_lifecycle_policy.snapshots[0].policy_details[0].target_tags == tomap({ Name = "acme-monitoring-data" })
+      && aws_dlm_lifecycle_policy.snapshots[0].policy_details[0].schedule[0].create_rule[0].times == tolist(["03:00"])
+    && aws_dlm_lifecycle_policy.snapshots[0].policy_details[0].schedule[0].retain_rule[0].count == 7)
+    error_message = "one daily snapshot of the data volume at 03:00 UTC, the last 7 kept"
+  }
+}
+
+run "rejects_a_domain_without_a_zone" {
+  command = plan
+
+  variables {
+    domain = "grafana.example.com"
+  }
+
+  expect_failures = [var.zone_id]
+}
+
+run "rejects_an_invalid_name" {
+  command = plan
+
+  variables {
+    name = "Acme Monitoring"
+  }
+
+  expect_failures = [var.name]
+}
+
+run "rejects_a_tiny_data_volume" {
+  command = plan
+
+  variables {
+    data_volume_gb = 5
+  }
+
+  expect_failures = [var.data_volume_gb]
+}
