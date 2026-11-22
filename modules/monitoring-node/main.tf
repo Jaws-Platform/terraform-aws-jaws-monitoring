@@ -21,6 +21,9 @@ data "aws_subnet" "this" {
 data "aws_ami" "this" {
   owners      = ["amazon"]
   most_recent = true
+  # The image is pinned by name, and Amazon deprecates old images: keep
+  # resolving the pinned one until a pull request bumps ami_name.
+  include_deprecated = true
 
   filter {
     name   = "name"
