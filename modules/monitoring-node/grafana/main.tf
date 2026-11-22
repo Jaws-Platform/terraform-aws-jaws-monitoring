@@ -50,9 +50,9 @@ locals {
     }]
   })
 
-  # Dashboards: path under grafana/dashboards/ => JSON. Plan 05's later tasks
-  # add the module's own.
-  module_dashboards = {}
+  # Dashboards: path under grafana/dashboards/ => JSON. The directory is the
+  # Grafana folder, the same folder the host rules go in.
+  module_dashboards = { "Monitoring/host.json" = jsonencode(local.host_dashboard) }
   dashboards        = merge(local.module_dashboards, var.extra_dashboards)
 
   # Alerting provisioning files the module renders: path => document (an

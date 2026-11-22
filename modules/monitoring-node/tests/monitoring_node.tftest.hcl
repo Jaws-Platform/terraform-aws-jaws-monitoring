@@ -482,3 +482,65 @@ run "rejects_an_extra_rules_name_grafana_cant_file" {
 
   expect_failures = [var.extra_alert_rules]
 }
+
+run "the_default_thresholds_are_the_specs" {
+  command = plan
+
+  assert {
+    condition = jsonencode(var.thresholds) == jsonencode({
+      container_restarts      = { critical = 3, warning = 1 }
+      cpu_credits_percent     = { critical = 5, warning = 25 }
+      cpu_percent             = { critical = 85, warning = 60 }
+      disk_full_days          = { critical = 2, warning = 7 }
+      disk_percent            = { critical = 90, warning = 70 }
+      inodes_percent          = { critical = 90, warning = 70 }
+      memory_percent          = { critical = 90, warning = 70 }
+      os_release_update_days  = { warning = 7 }
+      prometheus_history_days = { warning = 90 }
+      prometheus_size_percent = { warning = 85 }
+      swap_percent            = { critical = 75, warning = 25 }
+      tls_days                = { critical = 3, warning = 14 }
+    })
+    error_message = "the thresholds default to spec 6.8's table (and the owner's history rule)"
+  }
+}
+
+run "rejects_thresholds_in_the_wrong_order" {
+  command = plan
+
+  variables {
+    thresholds = { cpu_percent = { warning = 90, critical = 80 } }
+  }
+
+  expect_failures = [var.thresholds]
+}
+
+run "rejects_lower_is_worse_thresholds_in_the_wrong_order" {
+  command = plan
+
+  variables {
+    thresholds = { tls_days = { warning = 3, critical = 14 } }
+  }
+
+  expect_failures = [var.thresholds]
+}
+
+run "rejects_a_fractional_restart_count" {
+  command = plan
+
+  variables {
+    thresholds = { container_restarts = { warning = 1.5, critical = 3 } }
+  }
+
+  expect_failures = [var.thresholds]
+}
+
+run "rejects_a_percentage_over_100" {
+  command = plan
+
+  variables {
+    thresholds = { memory_percent = { warning = 70, critical = 120 } }
+  }
+
+  expect_failures = [var.thresholds]
+}

@@ -5,6 +5,10 @@ module "grafana" {
   source = "./grafana"
 
   region            = local.region
+  instance_id       = aws_instance.this.id
+  instance_type     = var.instance_type
+  domain            = var.domain
+  thresholds        = var.thresholds
   extra_dashboards  = var.extra_dashboards
   extra_alert_rules = var.extra_alert_rules
 }

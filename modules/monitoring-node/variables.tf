@@ -133,3 +133,52 @@ variable "extra_alert_rules" {
     error_message = "Each extra_alert_rules key is lowercase letters, digits and -."
   }
 }
+
+variable "thresholds" {
+  description = "Alert thresholds, which also set the dashboard's tile colours and dashed lines. Every attribute is optional and defaults to spec 6.8's numbers. Percentages are of the resource; cpu_credits_percent is of the instance type's maximum balance; container_restarts counts restarts in 15 minutes; the *_days are days. prometheus_history_days warns only while Prometheus is above prometheus_size_percent of its size cap, i.e. when the cap is costing history."
+  type = object({
+    cpu_percent             = optional(object({ warning = number, critical = number }), { warning = 60, critical = 85 })
+    cpu_credits_percent     = optional(object({ warning = number, critical = number }), { warning = 25, critical = 5 })
+    memory_percent          = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })
+    swap_percent            = optional(object({ warning = number, critical = number }), { warning = 25, critical = 75 })
+    disk_percent            = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })
+    disk_full_days          = optional(object({ warning = number, critical = number }), { warning = 7, critical = 2 })
+    inodes_percent          = optional(object({ warning = number, critical = number }), { warning = 70, critical = 90 })
+    prometheus_size_percent = optional(object({ warning = number }), { warning = 85 })
+    prometheus_history_days = optional(object({ warning = number }), { warning = 90 })
+    container_restarts      = optional(object({ warning = number, critical = number }), { warning = 1, critical = 3 })
+    tls_days                = optional(object({ warning = number, critical = number }), { warning = 14, critical = 3 })
+    os_release_update_days  = optional(object({ warning = number }), { warning = 7 })
+  })
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for t in [var.thresholds.cpu_percent, var.thresholds.memory_percent, var.thresholds.swap_percent, var.thresholds.disk_percent, var.thresholds.inodes_percent, var.thresholds.container_restarts] :
+      t.warning < t.critical
+    ])
+    error_message = "For cpu, memory, swap, disk, inodes and container_restarts, higher is worse: warning must be below critical."
+  }
+
+  validation {
+    condition = alltrue([
+      for t in [var.thresholds.cpu_credits_percent, var.thresholds.disk_full_days, var.thresholds.tls_days] :
+      t.warning > t.critical
+    ])
+    error_message = "For cpu_credits_percent, disk_full_days and tls_days, lower is worse: warning must be above critical."
+  }
+
+  validation {
+    condition = alltrue([
+      for v in flatten([
+        for t in [var.thresholds.cpu_percent, var.thresholds.cpu_credits_percent, var.thresholds.memory_percent, var.thresholds.swap_percent, var.thresholds.disk_percent, var.thresholds.inodes_percent] : [t.warning, t.critical]
+      ]) : v > 0 && v <= 100
+    ]) && var.thresholds.prometheus_size_percent.warning > 0 && var.thresholds.prometheus_size_percent.warning <= 100
+    error_message = "Percentages are above 0 and at most 100."
+  }
+
+  validation {
+    condition     = alltrue([for v in [var.thresholds.container_restarts.warning, var.thresholds.container_restarts.critical] : v >= 1 && floor(v) == v])
+    error_message = "container_restarts are whole numbers of restarts, at least 1."
+  }
+}

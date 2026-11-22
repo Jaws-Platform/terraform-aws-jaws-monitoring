@@ -5,8 +5,29 @@
 
 variables {
   region            = "us-east-1"
+  instance_id       = "i-0123456789abcdef0"
+  instance_type     = "t9g.medium"
+  domain            = null
   extra_dashboards  = {}
   extra_alert_rules = {}
+
+  # Spec 6.8's defaults. They live once, in the monitoring-node module's
+  # thresholds variable; the_default_thresholds_are_the_specs (in
+  # monitoring_node.tftest.hcl) pins that copy to the same numbers.
+  thresholds = {
+    cpu_percent             = { warning = 60, critical = 85 }
+    cpu_credits_percent     = { warning = 25, critical = 5 }
+    memory_percent          = { warning = 70, critical = 90 }
+    swap_percent            = { warning = 25, critical = 75 }
+    disk_percent            = { warning = 70, critical = 90 }
+    disk_full_days          = { warning = 7, critical = 2 }
+    inodes_percent          = { warning = 70, critical = 90 }
+    prometheus_size_percent = { warning = 85 }
+    prometheus_history_days = { warning = 90 }
+    container_restarts      = { warning = 1, critical = 3 }
+    tls_days                = { warning = 14, critical = 3 }
+    os_release_update_days  = { warning = 7 }
+  }
 }
 
 run "it_provisions_both_data_sources_and_prunes_removed_ones" {
@@ -219,4 +240,173 @@ run "rejects_a_dashboard_without_a_uid" {
   }
 
   expect_failures = [output.files]
+}
+
+run "the_host_dashboard_follows_the_house_style" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).uid == "monitoring-host" && jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).title == "Monitoring node · Host health" && jsonencode(jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).tags) == jsonencode(["monitoring"])
+    error_message = "the host dashboard has a fixed uid, since rules link to it"
+  }
+
+  assert {
+    condition     = jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).editable == false && jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).refresh == "30s" && jsonencode(jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).time) == jsonencode({ from = "now-6h", to = "now" }) && jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).timezone == "browser" && jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).graphTooltip == 1 && jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).schemaVersion == 39
+    error_message = "read-only, the last 6 hours, a 30-second refresh"
+  }
+
+  assert {
+    condition     = length(distinct([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p.id])) == length(jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels)
+    error_message = "panel ids are unique"
+  }
+
+  assert {
+    condition     = alltrue([for i, p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p.type != "row" || try(jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels[i + 1].type, "") == "text"])
+    error_message = "every row opens with a text panel"
+  }
+
+  assert {
+    condition     = alltrue([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : contains(["row", "text"], p.type) || trimspace(try(p.description, "")) != ""])
+    error_message = "every panel has a description"
+  }
+}
+
+run "tiles_and_lines_use_the_thresholds" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    thresholds = merge(var.thresholds, { cpu_percent = { warning = 50, critical = 80 } })
+  }
+
+  assert {
+    condition     = jsonencode(one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 1]).fieldConfig.defaults.thresholds.steps) == jsonencode([{ color = "green", value = null }, { color = "yellow", value = 50 }, { color = "red", value = 80 }])
+    error_message = "the CPU tile turns yellow and red at the thresholds"
+  }
+
+  assert {
+    condition     = contains([for t in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 12]).targets : "${t.expr}|${try(t.legendFormat, "")}"], "vector(50)|warning (50%)") && contains([for t in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 12]).targets : "${t.expr}|${try(t.legendFormat, "")}"], "vector(80)|critical (80%)")
+    error_message = "CPU used draws the warning and critical lines at the thresholds"
+  }
+
+  assert {
+    condition     = length(one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 12]).fieldConfig.overrides) == 2 && alltrue([for o in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 12]).fieldConfig.overrides : one([for pr in o.properties : pr.value.fill if pr.id == "custom.lineStyle"]) == "dash"])
+    error_message = "the threshold lines are dashed"
+  }
+
+  assert {
+    condition     = strcontains(one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 12]).description, "50") && strcontains(one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 12]).description, "80")
+    error_message = "the description states the thresholds"
+  }
+}
+
+run "credit_panels_need_a_burstable_type" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if contains([5, 13], p.id)]) == 2
+    error_message = "a t9g.medium has the credit tile and panel"
+  }
+
+  assert {
+    condition     = contains([for t in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 13]).targets : try(t.expr, "")], "vector(144)") && contains([for t in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 13]).targets : try(t.expr, "")], "vector(28.8)")
+    error_message = "the credit lines are 25 % and 5 % of a t9g.medium's 576"
+  }
+
+  assert {
+    condition     = contains(flatten([for t in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 13]).targets : try(t.dimensions.InstanceId, [])]), "i-0123456789abcdef0")
+    error_message = "the credit balance is this instance's"
+  }
+}
+
+run "credit_panels_need_a_burstable_type_unlike_m7g" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    instance_type = "m7g.medium"
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if contains([5, 13], p.id)]) == 0
+    error_message = "a type without CPU credits has no credit panels"
+  }
+}
+
+run "credit_lines_scale_with_the_type" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    instance_type = "t3.large"
+  }
+
+  assert {
+    condition     = contains([for t in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 13]).targets : try(t.expr, "")], "vector(216)") && contains([for t in one([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if p.id == 13]).targets : try(t.expr, "")], "vector(43.2)")
+    error_message = "a t3.large holds 864 credits"
+  }
+}
+
+run "tls_panels_need_a_domain" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if contains([45, 46], p.id)]) == 0
+    error_message = "without a domain there is no certificate or probe to show"
+  }
+}
+
+run "tls_panels_come_with_a_domain" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    domain = "grafana.example.com"
+  }
+
+  assert {
+    condition     = length([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : p if contains([45, 46], p.id)]) == 2
+    error_message = "with a domain, the TLS and probe panels"
+  }
+}
+
+run "every_panel_query_is_plain_promql" {
+  command = plan
+
+  module {
+    source = "./grafana"
+  }
+
+  variables {
+    domain = "grafana.example.com"
+  }
+
+  assert {
+    condition     = alltrue([for p in jsondecode(output.files["grafana/dashboards/Monitoring/host.json"]).panels : alltrue([for t in try(p.targets, []) : !strcontains(try(t.expr, ""), "$")])])
+    error_message = "no Grafana macros in queries, so promtool can check every one"
+  }
 }

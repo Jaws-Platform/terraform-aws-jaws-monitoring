@@ -43,9 +43,29 @@ cleanup() {
 trap cleanup EXIT
 
 # The module's arguments in each phase, as HCL.
+# Any valid numbers do here; the defaults live in variables.tf.
+thresholds='  thresholds = {
+    cpu_percent             = { warning = 60, critical = 85 }
+    cpu_credits_percent     = { warning = 25, critical = 5 }
+    memory_percent          = { warning = 70, critical = 90 }
+    swap_percent            = { warning = 25, critical = 75 }
+    disk_percent            = { warning = 70, critical = 90 }
+    disk_full_days          = { warning = 7, critical = 2 }
+    inodes_percent          = { warning = 70, critical = 90 }
+    prometheus_size_percent = { warning = 85 }
+    prometheus_history_days = { warning = 90 }
+    container_restarts      = { warning = 1, critical = 3 }
+    tls_days                = { warning = 14, critical = 3 }
+    os_release_update_days  = { warning = 7 }
+  }'
+
 phase1_args() {
   cat << EOF
   region            = "us-east-1"
+  instance_id       = "i-0123456789abcdef0"
+  instance_type     = "t9g.medium"
+  domain            = null
+$thresholds
   extra_dashboards  = { "Extra/extra.json" = file("$here/fixtures/extra-dashboard.json") }
   extra_alert_rules = { smoke = file("$here/fixtures/extra-rule.yaml") }
 EOF
@@ -54,6 +74,10 @@ EOF
 phase2_args() {
   cat << EOF
   region            = "us-east-1"
+  instance_id       = "i-0123456789abcdef0"
+  instance_type     = "m7g.medium"
+  domain            = "grafana.example.com"
+$thresholds
   extra_alert_rules = { smoke = "apiVersion: 1\ndeleteRules:\n  - orgId: 1\n    uid: extra-up-critical\n" }
 EOF
 }
