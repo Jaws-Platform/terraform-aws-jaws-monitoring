@@ -194,11 +194,76 @@ it is told to delete it.
 ### Testing it
 
 `scripts/check-module.sh modules/monitoring-node` runs the Terraform tests,
-the reconciler and release-check tests, and the Grafana smoke test, which
-needs Docker. The smoke test checks every PromQL query with `promtool`, starts
-the pinned Grafana on what the module renders, and compares Grafana's API
-with the files; then it renders a changed configuration and checks that what
-was removed is gone.
+the reconciler, cost-sync and release-check tests, and two Docker tests:
+
+- **the cost-sync test** runs the real script against the pinned Postgres
+  and the normalizer's contract fixtures;
+- **the Grafana smoke test** checks every PromQL query with `promtool`, starts
+  the pinned Grafana on what the module renders (next to a Postgres the real
+  cost-sync set up), and compares Grafana's API with the files. Then it
+  renders a changed configuration and checks that what was removed is gone.
+
+## Cost data
+
+With `cost`, the node keeps a `cost` database in its Postgres, filled from
+the billing bucket's `normalized/` layer, the only part of the bucket its
+role can read:
+
+```hcl
+cost = {
+  bucket = "acme-billing"
+  # normalized_prefix = "normalized"
+  # providers         = ["aws", "databricks"]   # which freshness alerts apply
+  # run_join_tags     = ["RunId", "TaskId"]     # the tags a run's cost rows carry
+}
+```
+
+**cost-sync** (a systemd timer, at boot and every 30 minutes) loads the
+billing-normalizer's CSV twins (`data.csv.gz`).
+
+- Each output whose ETag changed is loaded in one transaction, so it is
+  never doubled or half there.
+- An output that is gone loses its rows, and one bad output never stops the
+  rest.
+- It records the normalizer's `_runs/latest.json`, and writes the textfile
+  metrics the pipeline alerts read.
+- Its script and config travel in the bundle, so a change to them never
+  replaces the instance.
+- `journalctl -u monitoring-cost-sync` shows each run.
+
+**The database** is a cache of the bucket: a schema version change, or a lost
+data volume, rebuilds it from `normalized/`. Grafana reads it through the
+`Cost` data source as the read-only `cost_reader`. Ad hoc, from a Session
+Manager shell:
+
+```sh
+sudo docker exec -it monitoring-postgres-1 psql -U monitoring -d cost
+```
+
+| Object | What it holds |
+|---|---|
+| `cost.lines` | one row per normalized cost row: the FOCUS columns in snake_case, `tags` (jsonb), `project`, `component`, `environment`, `serverless`, `source` |
+| `cost.run_events` | one row per task-run event (`started`, `finished`, `swept`) |
+| `cost.task_runs` | one row per run: its launch metadata, `started_at`, `ended_at`, `outcome` (`swept`, or null while running) |
+| `cost.task_run_costs` | each run's billed cost: the cost rows that carry its join tags |
+| `cost.loads`, `cost.normalizer_runs` | what was loaded, and the normalizer runs seen |
+
+**The pipeline alerts** (label `area = pipeline`, on the host dashboard's
+Pipeline row):
+
+| Rule | Warning | Critical | `thresholds` |
+|---|---|---|---|
+| Cost sync late | 2 h | 6 h | `cost_sync_hours` |
+| Normalizer late (no successful run) | 3 h | 12 h | `normalizer_hours` |
+| Normalizer run failed | | the last run failed | |
+| AWS charges stale (newest charge loaded) | 3 days | 5 days | `aws_charge_days` |
+| Databricks delivery stale | 36 h | 60 h | `databricks_delivery_hours` |
+| Task run possibly leaked (no end, an hour past its max hours) | | any | |
+| Task run over its ceiling (billed cost) | | any | |
+
+Until any data has arrived, each clock starts when the node first ran
+cost-sync. A new node isn't alarmed in its first hours, but is once data
+never comes.
 
 ## Recovery
 
@@ -207,7 +272,7 @@ was removed is gone.
 | Stop and start | The disks persist; the stack comes back, and DNS follows the new address | Metrics for the time it was off |
 | Reboot or EC2 recovery | Same disks, same instance | Minutes of metrics |
 | Instance replaced | The new instance reattaches the data volume and carries on | Minutes of metrics |
-| Data volume lost | Dashboards and alerts are reprovisioned from the bundle; Grafana users other than the admin must be added again | Prometheus history since the last snapshot |
+| Data volume lost | Dashboards and alerts are reprovisioned from the bundle, and cost-sync rebuilds the cost database from `normalized/`; Grafana users other than the admin must be added again | Prometheus history since the last snapshot |
 
 ## Usage
 
@@ -232,6 +297,8 @@ module "monitoring_node" {
     channels = { platform = "/acme/monitoring/slack/platform" }
     routes   = { host = "platform" }
   }
+
+  cost = { bucket = "acme-billing" }
 }
 ```
 
