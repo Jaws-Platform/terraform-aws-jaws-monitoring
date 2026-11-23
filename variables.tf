@@ -194,6 +194,13 @@ variable "schedule" {
   default = null
 }
 
+variable "off_hours_page" {
+  description = "With `schedule` and `domain`: at each scheduled stop, point `domain` at a CloudFront page that says Grafana is off and when it's back, instead of the stopped node's released address; the node points it back at boot. Needs the provider in us-east-1. Does nothing without both."
+  type        = bool
+  nullable    = false
+  default     = false
+}
+
 variable "images" {
   description = "Container images to use instead of the module's digest-pinned defaults, by service name (see the README)."
   type        = map(string)

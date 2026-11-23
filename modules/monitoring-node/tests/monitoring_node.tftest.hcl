@@ -48,6 +48,31 @@ mock_provider "aws" {
     }
   }
 
+  mock_resource "aws_acm_certificate" {
+    defaults = {
+      arn = "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+      domain_validation_options = [{
+        domain_name           = "grafana.example.com"
+        resource_record_name  = "_0123456789abcdef.grafana.example.com."
+        resource_record_type  = "CNAME"
+        resource_record_value = "_fedcba9876543210.acm-validations.aws."
+      }]
+    }
+  }
+
+  mock_resource "aws_cloudfront_distribution" {
+    defaults = {
+      domain_name    = "d111111abcdef8.cloudfront.net"
+      hosted_zone_id = "Z2FDTNDATAQYW2"
+    }
+  }
+
+  mock_resource "aws_cloudfront_function" {
+    defaults = {
+      arn = "arn:aws:cloudfront::123456789012:function/acme-monitoring-off-hours-page"
+    }
+  }
+
   mock_resource "aws_lambda_function" {
     defaults = {
       arn = "arn:aws:lambda:us-east-1:123456789012:function:acme-monitoring-watchdog"
@@ -922,6 +947,221 @@ run "the_scheduler_may_start_and_stop_only_this_instance" {
     condition     = jsonencode([for st in jsondecode(aws_iam_role_policy.schedule[0].policy).Statement : [st.Effect, sort(flatten([st.Action])), flatten([st.Resource])]]) == jsonencode([["Allow", ["ec2:StartInstances", "ec2:StopInstances"], [aws_instance.this.arn]]])
     error_message = "the scheduler's role starts and stops this instance, and nothing else"
   }
+}
+
+run "without_the_off_hours_page_nothing_is_added" {
+  command = plan
+
+  variables {
+    domain   = "grafana.example.com"
+    zone_id  = "Z123"
+    schedule = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = length(aws_acm_certificate.off_hours_page) == 0 && length(aws_route53_record.off_hours_page_validation) == 0 && length(aws_acm_certificate_validation.off_hours_page) == 0 && length(aws_cloudfront_function.off_hours_page) == 0 && length(aws_cloudfront_distribution.off_hours_page) == 0 && length(aws_scheduler_schedule.off_hours_page) == 0 && length(aws_iam_role_policy.off_hours_page) == 0
+    error_message = "off_hours_page is opt-in: by default none of its resources exist"
+  }
+
+  assert {
+    condition     = output.off_hours_page_domain_name == null
+    error_message = "without the page there is no distribution domain name"
+  }
+}
+
+run "the_off_hours_page_needs_a_schedule_and_a_domain" {
+  command = plan
+
+  variables {
+    domain         = "grafana.example.com"
+    zone_id        = "Z123"
+    off_hours_page = true
+  }
+
+  assert {
+    condition     = length(aws_cloudfront_distribution.off_hours_page) == 0 && length(aws_scheduler_schedule.off_hours_page) == 0 && length(aws_acm_certificate.off_hours_page) == 0 && output.off_hours_page_domain_name == null
+    error_message = "with no schedule the node is never stopped, so there is no page"
+  }
+}
+
+run "the_off_hours_page_needs_a_domain_too" {
+  command = plan
+
+  variables {
+    off_hours_page = true
+    schedule       = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = length(aws_cloudfront_distribution.off_hours_page) == 0 && length(aws_scheduler_schedule.off_hours_page) == 0 && length(aws_iam_role_policy.off_hours_page) == 0 && output.off_hours_page_domain_name == null
+    error_message = "with no domain there is no name to point at the page"
+  }
+}
+
+run "the_off_hours_page_answers_for_the_domain" {
+  command = plan
+
+  variables {
+    domain         = "grafana.example.com"
+    zone_id        = "Z123"
+    off_hours_page = true
+    schedule       = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = aws_cloudfront_distribution.off_hours_page[0].aliases == toset([var.domain]) && aws_acm_certificate.off_hours_page[0].domain_name == var.domain && aws_acm_certificate.off_hours_page[0].validation_method == "DNS"
+    error_message = "the distribution answers for the domain, with a DNS-validated certificate for it"
+  }
+
+  assert {
+    condition     = aws_cloudfront_distribution.off_hours_page[0].price_class == "PriceClass_100"
+    error_message = "the cheapest price class"
+  }
+
+  assert {
+    condition     = one(aws_cloudfront_distribution.off_hours_page[0].default_cache_behavior[0].function_association).event_type == "viewer-request" && one(aws_cloudfront_distribution.off_hours_page[0].default_cache_behavior[0].function_association).function_arn == aws_cloudfront_function.off_hours_page[0].arn
+    error_message = "the function answers every request at viewer-request"
+  }
+
+  assert {
+    condition     = aws_cloudfront_function.off_hours_page[0].runtime == "cloudfront-js-2.0"
+    error_message = "the function runs on cloudfront-js-2.0"
+  }
+
+  assert {
+    condition     = output.off_hours_page_domain_name == "d111111abcdef8.cloudfront.net"
+    error_message = "the output is the distribution's domain name"
+  }
+}
+
+run "the_page_says_when_grafana_is_back" {
+  command = plan
+
+  variables {
+    domain         = "grafana.example.com"
+    zone_id        = "Z123"
+    off_hours_page = true
+    schedule       = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = alltrue([for s in ["Grafana runs every day, 08:00–24:00 (America/Denver).", "It's back at 08:00.", "503", "no-store", "<title>Off hours</title>", "grafana.example.com"] : strcontains(aws_cloudfront_function.off_hours_page[0].code, trim(jsonencode(s), "\""))])
+    error_message = "the page names the days, the hours, the zone and when it is back, and answers 503 with no-store"
+  }
+
+  assert {
+    condition     = !strcontains(aws_cloudfront_function.off_hours_page[0].code, "next day it runs")
+    error_message = "an every-day schedule never says the next day it runs"
+  }
+
+  assert {
+    condition     = length(aws_cloudfront_function.off_hours_page[0].code) < 10240
+    error_message = "CloudFront Functions are limited to 10 KB"
+  }
+}
+
+run "the_page_lists_the_days_it_runs" {
+  command = plan
+
+  variables {
+    domain         = "grafana.example.com"
+    zone_id        = "Z123"
+    off_hours_page = true
+    schedule       = { timezone = "America/Denver", days = ["fri", "mon", "wed", "tue", "thu"], on = "08:00", off = "20:00" }
+  }
+
+  assert {
+    condition     = alltrue([for s in ["Grafana runs Mon, Tue, Wed, Thu and Fri, 08:00–20:00 (America/Denver).", "It's back at 08:00 on the next day it runs."] : strcontains(aws_cloudfront_function.off_hours_page[0].code, trim(jsonencode(s), "\""))])
+    error_message = "the days come in week order, and a weekday schedule never says tomorrow"
+  }
+
+  assert {
+    condition     = !strcontains(aws_cloudfront_function.off_hours_page[0].code, "tomorrow")
+    error_message = "never implies tomorrow"
+  }
+}
+
+run "the_page_schedule_fires_with_the_stop" {
+  command = plan
+
+  variables {
+    domain         = "grafana.example.com"
+    zone_id        = "Z123"
+    off_hours_page = true
+    schedule       = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = aws_scheduler_schedule.off_hours_page[0].schedule_expression == "cron(0 0 ? * TUE,WED,THU,FRI,SAT,SUN,MON *)" && aws_scheduler_schedule.off_hours_page[0].schedule_expression == aws_scheduler_schedule.stop[0].schedule_expression
+    error_message = "the page goes up at the stop time, on the stop's days"
+  }
+
+  assert {
+    condition     = aws_scheduler_schedule.off_hours_page[0].schedule_expression_timezone == "America/Denver" && aws_scheduler_schedule.off_hours_page[0].flexible_time_window[0].mode == "OFF"
+    error_message = "in the schedule's time zone, on the dot"
+  }
+
+  assert {
+    condition     = aws_scheduler_schedule.off_hours_page[0].target[0].arn == "arn:aws:scheduler:::aws-sdk:route53:changeResourceRecordSets"
+    error_message = "the schedule calls ChangeResourceRecordSets"
+  }
+
+  assert {
+    condition     = aws_scheduler_schedule.off_hours_page[0].target[0].input == jsonencode({ HostedZoneId = "Z123", ChangeBatch = { Changes = [{ Action = "UPSERT", ResourceRecordSet = { Name = "grafana.example.com", Type = "A", AliasTarget = { HostedZoneId = "Z2FDTNDATAQYW2", DNSName = "d111111abcdef8.cloudfront.net", EvaluateTargetHealth = false } } }] } })
+    error_message = "it upserts the domain as an alias to the distribution"
+  }
+}
+
+run "the_scheduler_may_upsert_only_the_domain_s_a_record" {
+  command = plan
+
+  variables {
+    domain         = "Grafana.Example.com"
+    zone_id        = "Z123"
+    off_hours_page = true
+    schedule       = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition = jsonencode(jsondecode(aws_iam_role_policy.off_hours_page[0].policy).Statement) == jsonencode([{
+      Effect   = "Allow"
+      Action   = "route53:ChangeResourceRecordSets"
+      Resource = "arn:aws:route53:::hostedzone/Z123"
+      Condition = {
+        "ForAllValues:StringEquals" = {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["grafana.example.com"]
+          "route53:ChangeResourceRecordSetsRecordTypes"           = ["A"]
+          "route53:ChangeResourceRecordSetsActions"               = ["UPSERT"]
+        }
+      }
+    }]) && aws_iam_role_policy.off_hours_page[0].name == "off-hours-page"
+    error_message = "the scheduler may upsert the domain's A record in this zone, and nothing else"
+  }
+
+  assert {
+    condition     = jsonencode([for st in jsondecode(aws_iam_role_policy.schedule[0].policy).Statement : [st.Effect, sort(flatten([st.Action])), flatten([st.Resource])]]) == jsonencode([["Allow", ["ec2:StartInstances", "ec2:StopInstances"], [aws_instance.this.arn]]])
+    error_message = "the start-stop policy is unchanged"
+  }
+}
+
+run "rejects_the_off_hours_page_outside_us_east_1" {
+  command = plan
+
+  variables {
+    domain         = "grafana.example.com"
+    zone_id        = "Z123"
+    off_hours_page = true
+    schedule       = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  override_data {
+    target = data.aws_region.current
+    values = {
+      region = "eu-west-1"
+    }
+  }
+
+  expect_failures = [aws_acm_certificate.off_hours_page]
 }
 
 run "rejects_half_hours" {

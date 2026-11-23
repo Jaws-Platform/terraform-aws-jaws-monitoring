@@ -61,6 +61,7 @@ module "node" {
   prometheus_retention = var.prometheus_retention
   snapshots            = var.snapshots
   schedule             = var.schedule
+  off_hours_page       = var.off_hours_page
   images               = var.images
   extra_dashboards     = var.extra_dashboards
   extra_alert_rules    = var.extra_alert_rules

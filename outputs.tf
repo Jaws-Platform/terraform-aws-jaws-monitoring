@@ -26,3 +26,8 @@ output "node" {
     watchdog_function_name = module.node.watchdog_function_name
   }
 }
+
+output "off_hours_page_domain_name" {
+  description = "The off-hours page's CloudFront domain name (null without the page)."
+  value       = module.node.off_hours_page_domain_name
+}

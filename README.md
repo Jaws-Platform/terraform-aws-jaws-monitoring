@@ -135,6 +135,7 @@ No resources.
 | normalizer\_log\_retention\_days | Retention of the function's CloudWatch log group, in days. | `number` | `null` | no |
 | normalizer\_memory\_size | The function's memory, in MB. A month of AWS line items takes roughly 6 KB per<br/>row at peak; raise it when a billing period reaches about 150,000 rows. | `number` | `null` | no |
 | normalizer\_schedule\_expression | How often the normalizer runs, as an EventBridge Scheduler expression. A run with nothing new to read only writes its run record. | `string` | `null` | no |
+| off\_hours\_page | With `schedule` and `domain`: at each scheduled stop, point `domain` at a CloudFront page that says Grafana is off and when it's back, instead of the stopped node's released address; the node points it back at boot. Needs the provider in us-east-1. Does nothing without both. | `bool` | `false` | no |
 | pandas\_layer\_arn | The Lambda layer that provides pyarrow. Null uses the AWS SDK for pandas layer<br/>for Python 3.13 on arm64 in the function's region (awswrangler 3.18.0). | `string` | `null` | no |
 | prometheus\_retention | How long Prometheus keeps metrics, and the size it never grows past (the oldest data is dropped first). size\_gb is at least 1; keep it well under data\_volume\_gb. | <pre>object({<br/>    time    = optional(string, "365d")<br/>    size_gb = optional(number, 12)<br/>  })</pre> | `null` | no |
 | promoted\_tags | Tags promoted out of each row's tag map into their own `x_<tag>` columns, for<br/>grouping. A tag key is matched as written, as `user:<tag>` or as<br/>`user_<tag lowercased>`. Changing the list rebuilds every output. | `list(string)` | `null` | no |
@@ -152,4 +153,5 @@ No resources.
 | ---- | ----------- |
 | node | The monitoring node's outputs: its instance, address, role, config bucket, parameters, data volume, Grafana URL and watchdog. |
 | normalizer | The billing normalizer's outputs: its function, role, log group, schedule, and where it writes. |
+| off\_hours\_page\_domain\_name | The off-hours page's CloudFront domain name (null without the page). |
 <!-- END_TF_DOCS -->
