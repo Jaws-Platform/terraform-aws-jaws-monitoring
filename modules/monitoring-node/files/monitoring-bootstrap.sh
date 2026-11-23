@@ -39,7 +39,8 @@ mount_data() {
   fi
   if ! blkid "$device" > /dev/null 2>&1; then
     log "formatting the new data volume ${DATA_VOLUME_ID}"
-    mkfs.xfs -L monitoring-data "$device"
+    # An XFS label is at most 12 characters; fstab mounts by UUID.
+    mkfs.xfs -L monitoring "$device"
   fi
   uuid="$(blkid -s UUID -o value "$device")"
   mkdir -p /data
