@@ -139,7 +139,16 @@ def _runs(store: Store, config: Config, record: dict) -> None:
 
 def _aws(store: Store, config: Config, record: dict) -> None:
     aws = config.aws
-    for period, manifest in latest_aws_manifests(store, aws.delivery_prefix).items():
+    manifests = latest_aws_manifests(store, aws.delivery_prefix)
+    if not manifests:
+        # Deliveries in a layout the normalizer can't read would otherwise
+        # leave the AWS dashboards empty with a clean run record.
+        listed = sum(1 for _ in store.list(f"{aws.delivery_prefix}/metadata/"))
+        if listed:
+            record["warnings"].append(
+                f"aws: no billing-period manifest matched under {aws.delivery_prefix}/metadata/ "
+                f"({listed} object{'' if listed == 1 else 's'} there); check the export's folder layout")
+    for period, manifest in manifests.items():
         with _isolated(record, f"aws {period}"):
             delivery = read_aws_delivery(store, config.bucket, period, manifest)
 

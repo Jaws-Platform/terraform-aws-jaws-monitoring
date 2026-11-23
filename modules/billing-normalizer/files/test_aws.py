@@ -68,6 +68,18 @@ class LatestDeliveriesTest(unittest.TestCase):
         self.assertEqual({p: d.execution_id for p, d in deliveries.items()}, {"2026-10": "c", "2026-11": "b"})
         self.assertEqual(deliveries["2026-11"].data_keys, (f"{PREFIX}/data/BILLING_PERIOD=2026-11/b/x-00001.snappy.parquet",))
 
+    def test_lowercase_billing_period_folders_are_found(self):
+        # FOCUS 1.2 exports name their folders billing_period=YYYY-MM, in lowercase.
+        store = FakeStore()
+        store.add(f"{PREFIX}/metadata/billing_period=2026-10/e1/acme-focus-daily-Manifest.json",
+                  manifest("e1", "2026-10", ["e1/acme-focus-daily-00001.snappy.parquet"]))
+        store.add(f"{PREFIX}/metadata/billing_period=2026-10/e1/acme-focus-daily-Manifest-FOCUS.json", b"{}")
+
+        manifests = latest_aws_manifests(store, PREFIX)
+
+        self.assertEqual(list(manifests), ["2026-10"])
+        self.assertTrue(manifests["2026-10"].key.endswith("/acme-focus-daily-Manifest.json"))
+
     def test_manifest_files_in_another_bucket_are_an_error(self):
         store = FakeStore()
         key = f"{PREFIX}/metadata/BILLING_PERIOD=2026-11/Manifest.json"
