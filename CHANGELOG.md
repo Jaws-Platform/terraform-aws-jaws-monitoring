@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.8.1...v0.8.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **monitoring-node:** format the data volume with a label XFS accepts ([#21](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/issues/21)) ([3424a00](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/commit/3424a008649736c1afa36112967f5fb4f243e11d))
+
 ## [0.8.1](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.8.0...v0.8.1) (2026-11-22)
 
 
