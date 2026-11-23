@@ -24,7 +24,7 @@ overwritten:
 
 ```text
 <prefix>/<name>/data/billing_period=YYYY-MM/<timestamp>-<execution-id>/<name>-00001.snappy.parquet
-<prefix>/<name>/metadata/billing_period=YYYY-MM/Manifest.json
+<prefix>/<name>/metadata/billing_period=YYYY-MM/<name>-Manifest.json
 ```
 
 `Manifest.json` always describes the newest execution, and is written after
@@ -98,6 +98,6 @@ No modules.
 | Name | Description |
 | ---- | ----------- |
 | arn | The export's ARN. |
-| delivery\_prefix | Where AWS delivers: `<delivery_prefix>/data/billing_period=YYYY-MM/<timestamp>-<execution-id>/` and `<delivery_prefix>/metadata/billing_period=YYYY-MM/Manifest.json`. |
+| delivery\_prefix | Where AWS delivers: `<delivery_prefix>/data/billing_period=YYYY-MM/<timestamp>-<execution-id>/` and `<delivery_prefix>/metadata/billing_period=YYYY-MM/<name>-Manifest.json`. |
 | name | The export's name. |
 <!-- END_TF_DOCS -->

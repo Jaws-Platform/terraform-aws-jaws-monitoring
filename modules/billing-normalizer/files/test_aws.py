@@ -75,7 +75,10 @@ class LatestDeliveriesTest(unittest.TestCase):
                   manifest("e1", "2026-10", ["e1/acme-focus-daily-00001.snappy.parquet"]))
         store.add(f"{PREFIX}/metadata/billing_period=2026-10/e1/acme-focus-daily-Manifest-FOCUS.json", b"{}")
 
-        self.assertEqual(list(latest_aws_manifests(store, PREFIX)), ["2026-10"])
+        manifests = latest_aws_manifests(store, PREFIX)
+
+        self.assertEqual(list(manifests), ["2026-10"])
+        self.assertTrue(manifests["2026-10"].key.endswith("/acme-focus-daily-Manifest.json"))
 
     def test_manifest_files_in_another_bucket_are_an_error(self):
         store = FakeStore()
