@@ -127,7 +127,7 @@ cost allocation tags, so a promoted tag `Project` is matched as `Project`,
 ```hcl
 module "billing_normalizer" {
   source  = "Jaws-Platform/jaws-monitoring/aws//modules/billing-normalizer"
-  version = "0.8.1" # x-release-please-version
+  version = "0.8.2" # x-release-please-version
 
   name        = "acme-billing-normalizer"
   bucket_name = "acme-billing"
