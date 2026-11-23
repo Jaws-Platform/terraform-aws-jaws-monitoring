@@ -49,7 +49,9 @@ resource "aws_vpc_security_group_egress_rule" "all" {
 }
 
 # The node upserts its own address here at every boot (its public IPv4 address
-# changes on stop and start); Terraform only creates the record.
+# changes on stop and start); Terraform only creates the record. With
+# off_hours_page, the scheduler turns it into an alias to the off-hours page at
+# each stop, so Terraform ignores the alias too.
 resource "aws_route53_record" "this" {
   count = var.domain == null ? 0 : 1
 
@@ -60,6 +62,6 @@ resource "aws_route53_record" "this" {
   records = [aws_instance.this.public_ip]
 
   lifecycle {
-    ignore_changes = [records]
+    ignore_changes = [records, ttl, alias]
   }
 }

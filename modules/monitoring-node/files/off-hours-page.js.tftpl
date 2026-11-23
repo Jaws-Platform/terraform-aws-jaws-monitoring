@@ -1,0 +1,15 @@
+// CloudFront Functions (cloudfront-js-2.0): answers every request with the
+// off-hours page, so the origin is never contacted.
+var page = ${page};
+
+function handler(event) {
+  return {
+    statusCode: 503,
+    statusDescription: "Service Unavailable",
+    headers: {
+      "content-type": { value: "text/html; charset=utf-8" },
+      "cache-control": { value: "no-store" }
+    },
+    body: { encoding: "text", data: page }
+  };
+}

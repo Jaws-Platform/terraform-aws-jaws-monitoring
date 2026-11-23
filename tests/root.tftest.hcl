@@ -41,6 +41,25 @@ mock_provider "aws" {
     }
   }
 
+  mock_resource "aws_acm_certificate" {
+    defaults = {
+      arn = "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+      domain_validation_options = [{
+        domain_name           = "grafana.example.com"
+        resource_record_name  = "_0123456789abcdef.grafana.example.com."
+        resource_record_type  = "CNAME"
+        resource_record_value = "_fedcba9876543210.acm-validations.aws."
+      }]
+    }
+  }
+
+  mock_resource "aws_cloudfront_distribution" {
+    defaults = {
+      domain_name    = "d111111abcdef8.cloudfront.net"
+      hosted_zone_id = "Z2FDTNDATAQYW2"
+    }
+  }
+
   mock_resource "aws_iam_role" {
     defaults = {
       arn = "arn:aws:iam::123456789012:role/acme-monitoring"
@@ -100,5 +119,22 @@ run "a_databricks_only_root_expects_only_databricks" {
   assert {
     condition     = jsonencode(local.node_cost.providers) == jsonencode(["databricks"])
     error_message = "with no AWS source, the node expects no AWS charges"
+  }
+}
+
+run "the_root_passes_the_off_hours_page_to_the_node" {
+  command = plan
+
+  variables {
+    aws            = { delivery_prefix = "raw/provider=aws/source=data-exports/acme-focus-daily" }
+    domain         = "grafana.example.com"
+    zone_id        = "Z123"
+    off_hours_page = true
+    schedule       = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  assert {
+    condition     = output.off_hours_page_domain_name != null
+    error_message = "off_hours_page reaches the node: its distribution exists"
   }
 }

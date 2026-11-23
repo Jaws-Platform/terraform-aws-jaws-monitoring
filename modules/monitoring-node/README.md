@@ -208,6 +208,20 @@ schedule = {
 - **With Slack,** notifications are muted for the first 15 minutes after each
   scheduled start, while targets come up and cost-sync catches up. Every area
   gets its own route then, so nothing falls through to the unmuted root.
+- **Off-hours page** (`off_hours_page = true`, needs `domain` and the provider
+  in us-east-1): the stopped node's address is released, so without this the
+  name hangs overnight. A CloudFront function (free tier, no bucket or Lambda)
+  answers `domain` with a 503 page saying when Grafana is back, and a third
+  schedule points `domain` at it at each stop; the node points it back at boot.
+  If the zone has CAA records, they must allow Amazon (`amazon.com`).
+  The identity running Terraform needs ACM in us-east-1, CloudFront
+  distribution and function management, and a Route 53 change for the
+  certificate's validation CNAME. The first apply waits several minutes for
+  the certificate and the CloudFront deployment. Turn the page off during
+  on-hours: turning it off while the name is an alias leaves the name on a
+  deleted distribution until the node's next boot. Turning it off also deletes
+  the certificate's validation CNAME, which another ACM certificate for the
+  same name in the account would share.
 - **Snapshots** run an hour after the stop, in the schedule's time zone (03:00
   when that falls between 01:00 and 02:59), so they capture disks that were
   shut down cleanly. Without a schedule they run at `snapshots.time_utc`.
@@ -458,9 +472,13 @@ module "monitoring_node" {
 
 | Name | Type |
 | ---- | ---- |
+| [aws_acm_certificate.off_hours_page](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/acm_certificate) | resource |
+| [aws_acm_certificate_validation.off_hours_page](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/acm_certificate_validation) | resource |
 | [aws_backup_plan.snapshots](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/backup_plan) | resource |
 | [aws_backup_selection.snapshots](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/backup_selection) | resource |
 | [aws_backup_vault.snapshots](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/backup_vault) | resource |
+| [aws_cloudfront_distribution.off_hours_page](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudfront_distribution) | resource |
+| [aws_cloudfront_function.off_hours_page](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudfront_function) | resource |
 | [aws_cloudwatch_log_group.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_log_group) | resource |
 | [aws_cloudwatch_metric_alarm.instance_status](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_metric_alarm) | resource |
 | [aws_cloudwatch_metric_alarm.system_status](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_metric_alarm) | resource |
@@ -471,6 +489,7 @@ module "monitoring_node" {
 | [aws_iam_role.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
 | [aws_iam_role.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
 | [aws_iam_role.watchdog_schedule](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
+| [aws_iam_role_policy.off_hours_page](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy) | resource |
 | [aws_iam_role_policy.schedule](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy) | resource |
 | [aws_iam_role_policy.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy) | resource |
 | [aws_iam_role_policy.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy) | resource |
@@ -479,6 +498,7 @@ module "monitoring_node" {
 | [aws_instance.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance) | resource |
 | [aws_lambda_function.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_function) | resource |
 | [aws_lambda_permission.watchdog_sns](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_permission) | resource |
+| [aws_route53_record.off_hours_page_validation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/route53_record) | resource |
 | [aws_route53_record.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/route53_record) | resource |
 | [aws_s3_bucket.config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket) | resource |
 | [aws_s3_bucket_lifecycle_configuration.config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_lifecycle_configuration) | resource |
@@ -487,6 +507,7 @@ module "monitoring_node" {
 | [aws_s3_bucket_server_side_encryption_configuration.config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_server_side_encryption_configuration) | resource |
 | [aws_s3_bucket_versioning.config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_versioning) | resource |
 | [aws_s3_object.bundle](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_object) | resource |
+| [aws_scheduler_schedule.off_hours_page](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/scheduler_schedule) | resource |
 | [aws_scheduler_schedule.start](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/scheduler_schedule) | resource |
 | [aws_scheduler_schedule.stop](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/scheduler_schedule) | resource |
 | [aws_scheduler_schedule.watchdog](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/scheduler_schedule) | resource |
@@ -522,6 +543,7 @@ module "monitoring_node" {
 | extra\_dashboards | More dashboards to provision: "<Folder>/<name>.json" (the folder is created in Grafana) to the dashboard's JSON, which needs a uid and a title. | `map(string)` | `{}` | no |
 | images | Container images to use instead of the module's digest-pinned defaults, by service name (see the README). | `map(string)` | `{}` | no |
 | instance\_type | The instance type, arm64 (Graviton). A T type runs with standard CPU credits, so a burst never bills extra; watch its credit balance. | `string` | `"t9g.medium"` | no |
+| off\_hours\_page | With `schedule` and `domain`: at each scheduled stop, point `domain` at a CloudFront page that says Grafana is off and when it's back, instead of the stopped node's released address; the node points it back at boot. Needs the provider in us-east-1. Does nothing without both. | `bool` | `false` | no |
 | prometheus\_retention | How long Prometheus keeps metrics, and the size it never grows past (the oldest data is dropped first). size\_gb is at least 1; keep it well under data\_volume\_gb. | <pre>object({<br/>    time    = optional(string, "365d")<br/>    size_gb = optional(number, 12)<br/>  })</pre> | `{}` | no |
 | root\_volume\_gb | Size of the root volume: the OS, the images and a 2 GB swap file. | `number` | `12` | no |
 | schedule | Off-hours: the node runs from on to off on the given days, in timezone (an IANA name), and is stopped otherwise. Whole hours, on before off, off may be 24:00 (midnight at the end of the day), at least 4 hours on, days from mon to sun. Avoid 01:00-03:00, when daylight saving changes. null runs the node all day. | <pre>object({<br/>    timezone = string<br/>    days     = list(string)<br/>    on       = string<br/>    off      = string<br/>  })</pre> | `null` | no |
@@ -538,6 +560,7 @@ module "monitoring_node" {
 | data\_volume\_id | The data volume, kept when the instance is replaced. |
 | grafana\_url | Where Grafana is: the domain over HTTPS, or a Session Manager port forward to localhost:3000. |
 | instance\_id | The node's instance. |
+| off\_hours\_page\_domain\_name | The off-hours page's CloudFront domain name (null without the page). |
 | parameter\_prefix | The node's SSM parameters: config-bundle (what it should run), status and running-config (what it reports). |
 | public\_ip | The node's public IPv4 address at creation; it changes on stop and start (the DNS record follows it). |
 | role\_arn | The node's instance role ARN. |

@@ -47,3 +47,8 @@ output "watchdog_function_name" {
   description = "The watchdog Lambda's name, to invoke it by hand (null without Slack)."
   value       = local.watched ? aws_lambda_function.watchdog[0].function_name : null
 }
+
+output "off_hours_page_domain_name" {
+  description = "The off-hours page's CloudFront domain name (null without the page)."
+  value       = local.off_hours_page ? aws_cloudfront_distribution.off_hours_page[0].domain_name : null
+}
