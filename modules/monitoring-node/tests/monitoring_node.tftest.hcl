@@ -1032,6 +1032,21 @@ run "the_off_hours_page_answers_for_the_domain" {
     condition     = output.off_hours_page_domain_name == "d111111abcdef8.cloudfront.net"
     error_message = "the output is the distribution's domain name"
   }
+
+  assert {
+    condition     = aws_cloudfront_distribution.off_hours_page[0].viewer_certificate[0].ssl_support_method == "sni-only"
+    error_message = "SNI only: a dedicated IP (vip) bills about $600 a month"
+  }
+
+  assert {
+    condition     = aws_cloudfront_distribution.off_hours_page[0].default_cache_behavior[0].viewer_protocol_policy == "redirect-to-https"
+    error_message = "viewers are redirected to HTTPS"
+  }
+
+  assert {
+    condition     = one(aws_cloudfront_distribution.off_hours_page[0].origin).custom_origin_config[0].origin_protocol_policy == "https-only" && one(aws_cloudfront_distribution.off_hours_page[0].origin).origin_access_control_id == null
+    error_message = "the unused origin is https-only with no origin access, so S3 refuses anything that reaches it"
+  }
 }
 
 run "the_page_says_when_grafana_is_back" {
@@ -1081,6 +1096,35 @@ run "the_page_lists_the_days_it_runs" {
   }
 }
 
+run "the_page_names_a_single_day" {
+  command = plan
+
+  variables {
+    domain         = "grafana.example.com"
+    zone_id        = "Z123"
+    off_hours_page = true
+    schedule       = { timezone = "America/Denver", days = ["sat"], on = "08:00", off = "20:00" }
+  }
+
+  assert {
+    condition     = alltrue([for s in ["Grafana runs Sat, 08:00–20:00 (America/Denver).", "It's back at 08:00 on the next day it runs."] : strcontains(aws_cloudfront_function.off_hours_page[0].code, trim(jsonencode(s), "\""))])
+    error_message = "a single day is named alone, with no \"and\""
+  }
+}
+
+run "rejects_a_mixed_case_domain_for_the_off_hours_page" {
+  command = plan
+
+  variables {
+    domain         = "Grafana.Example.com"
+    zone_id        = "Z123"
+    off_hours_page = true
+    schedule       = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }
+  }
+
+  expect_failures = [aws_acm_certificate.off_hours_page]
+}
+
 run "the_page_schedule_fires_with_the_stop" {
   command = plan
 
@@ -1107,6 +1151,11 @@ run "the_page_schedule_fires_with_the_stop" {
   }
 
   assert {
+    condition     = aws_scheduler_schedule.off_hours_page[0].target[0].retry_policy[0].maximum_event_age_in_seconds == 1800 && aws_scheduler_schedule.off_hours_page[0].target[0].retry_policy[0].maximum_retry_attempts == 10
+    error_message = "retries are bounded, so a late one cannot land after the node's boot upsert"
+  }
+
+  assert {
     condition     = aws_scheduler_schedule.off_hours_page[0].target[0].input == jsonencode({ HostedZoneId = "Z123", ChangeBatch = { Changes = [{ Action = "UPSERT", ResourceRecordSet = { Name = "grafana.example.com", Type = "A", AliasTarget = { HostedZoneId = "Z2FDTNDATAQYW2", DNSName = "d111111abcdef8.cloudfront.net", EvaluateTargetHealth = false } } }] } })
     error_message = "it upserts the domain as an alias to the distribution"
   }
@@ -1116,7 +1165,7 @@ run "the_scheduler_may_upsert_only_the_domain_s_a_record" {
   command = plan
 
   variables {
-    domain         = "Grafana.Example.com"
+    domain         = "grafana.example.com"
     zone_id        = "Z123"
     off_hours_page = true
     schedule       = { timezone = "America/Denver", days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], on = "08:00", off = "24:00" }

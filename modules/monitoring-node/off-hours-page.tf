@@ -41,6 +41,11 @@ resource "aws_acm_certificate" "off_hours_page" {
     create_before_destroy = true
 
     precondition {
+      condition     = var.domain == lower(var.domain)
+      error_message = "The off-hours page needs domain in lowercase, because Route 53 returns record names in lowercase."
+    }
+
+    precondition {
       condition     = local.region == "us-east-1"
       error_message = "CloudFront certificates live in us-east-1, so the off-hours page needs the provider there. Set off_hours_page = false elsewhere."
     }
@@ -69,7 +74,7 @@ resource "aws_cloudfront_function" "off_hours_page" {
   count = local.off_hours_page ? 1 : 0
 
   name    = local.page_name
-  comment = "The off-hours page for ${var.domain}"
+  comment = "The off-hours page"
   runtime = "cloudfront-js-2.0"
   publish = true
   code    = templatefile("${path.module}/files/off-hours-page.js.tftpl", { page = jsonencode(local.off_hours_page_html) })
@@ -79,7 +84,7 @@ resource "aws_cloudfront_distribution" "off_hours_page" {
   count = local.off_hours_page ? 1 : 0
 
   enabled     = true
-  comment     = "${var.name}: off-hours page for ${var.domain}"
+  comment     = "${var.name}: off-hours page"
   aliases     = [var.domain]
   price_class = "PriceClass_100"
 
@@ -162,6 +167,14 @@ resource "aws_scheduler_schedule" "off_hours_page" {
   target {
     arn      = "arn:aws:scheduler:::aws-sdk:route53:changeResourceRecordSets"
     role_arn = aws_iam_role.schedule[0].arn
+
+    # Bounded so a late retry cannot land after the node's boot upsert and put
+    # the page up during on-hours.
+    retry_policy {
+      maximum_event_age_in_seconds = 1800 # inside the shortest off window a schedule allows (1 h)
+      maximum_retry_attempts       = 10
+    }
+
     input = jsonencode({
       HostedZoneId = var.zone_id
       ChangeBatch = {

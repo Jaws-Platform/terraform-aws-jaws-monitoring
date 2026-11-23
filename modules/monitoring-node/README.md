@@ -214,6 +214,14 @@ schedule = {
   answers `domain` with a 503 page saying when Grafana is back, and a third
   schedule points `domain` at it at each stop; the node points it back at boot.
   If the zone has CAA records, they must allow Amazon (`amazon.com`).
+  The identity running Terraform needs ACM in us-east-1, CloudFront
+  distribution and function management, and a Route 53 change for the
+  certificate's validation CNAME. The first apply waits several minutes for
+  the certificate and the CloudFront deployment. Turn the page off during
+  on-hours: turning it off while the name is an alias leaves the name on a
+  deleted distribution until the node's next boot. Turning it off also deletes
+  the certificate's validation CNAME, which another ACM certificate for the
+  same name in the account would share.
 - **Snapshots** run an hour after the stop, in the schedule's time zone (03:00
   when that falls between 01:00 and 02:59), so they capture disks that were
   shut down cleanly. Without a schedule they run at `snapshots.time_utc`.
