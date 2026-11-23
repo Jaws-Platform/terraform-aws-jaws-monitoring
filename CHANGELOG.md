@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.8.2...v0.9.0) (2026-11-23)
+
+
+### Features
+
+* **monitoring-node:** show an off-hours page at the domain while the node is stopped ([#24](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/issues/24)) ([01ef135](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/commit/01ef135d6dda5b5ed5d907b38be3a2b634a58f93))
+
 ## [0.8.2](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.8.1...v0.8.2) (2026-11-23)
 
 
