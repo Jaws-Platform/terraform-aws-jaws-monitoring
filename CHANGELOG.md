@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.9.0...v0.9.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **billing-normalizer:** match focus exports' lowercase billing_period folders ([#26](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/issues/26)) ([d1f5d2c](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/commit/d1f5d2c89844ade224c51f0de655e55811a5a6a9))
+* **monitoring-node:** spell the off-hours schedule's alias field as scheduler expects ([#28](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/issues/28)) ([1f1639e](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/commit/1f1639ea5740646b58a187f8b9c646fd9dadfb28))
+
 ## [0.9.0](https://github.com/Jaws-Platform/terraform-aws-jaws-monitoring/compare/v0.8.2...v0.9.0) (2026-11-23)
 
 
