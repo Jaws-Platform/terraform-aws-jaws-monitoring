@@ -175,6 +175,9 @@ resource "aws_scheduler_schedule" "off_hours_page" {
       maximum_retry_attempts       = 10
     }
 
+    # Scheduler's aws-sdk targets name fields as the AWS SDK integrations do:
+    # an acronym is one word, so Route 53's DNSName is DnsName here (and TTL
+    # would be Ttl). CreateSchedule refuses "DNSName".
     input = jsonencode({
       HostedZoneId = var.zone_id
       ChangeBatch = {
@@ -185,7 +188,7 @@ resource "aws_scheduler_schedule" "off_hours_page" {
             Type = "A"
             AliasTarget = {
               HostedZoneId         = aws_cloudfront_distribution.off_hours_page[0].hosted_zone_id
-              DNSName              = aws_cloudfront_distribution.off_hours_page[0].domain_name
+              DnsName              = aws_cloudfront_distribution.off_hours_page[0].domain_name
               EvaluateTargetHealth = false
             }
           }

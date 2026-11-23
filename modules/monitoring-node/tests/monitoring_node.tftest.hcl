@@ -1156,7 +1156,7 @@ run "the_page_schedule_fires_with_the_stop" {
   }
 
   assert {
-    condition     = aws_scheduler_schedule.off_hours_page[0].target[0].input == jsonencode({ HostedZoneId = "Z123", ChangeBatch = { Changes = [{ Action = "UPSERT", ResourceRecordSet = { Name = "grafana.example.com", Type = "A", AliasTarget = { HostedZoneId = "Z2FDTNDATAQYW2", DNSName = "d111111abcdef8.cloudfront.net", EvaluateTargetHealth = false } } }] } })
+    condition     = aws_scheduler_schedule.off_hours_page[0].target[0].input == jsonencode({ HostedZoneId = "Z123", ChangeBatch = { Changes = [{ Action = "UPSERT", ResourceRecordSet = { Name = "grafana.example.com", Type = "A", AliasTarget = { HostedZoneId = "Z2FDTNDATAQYW2", DnsName = "d111111abcdef8.cloudfront.net", EvaluateTargetHealth = false } } }] } })
     error_message = "it upserts the domain as an alias to the distribution"
   }
 }
