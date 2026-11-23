@@ -9,6 +9,6 @@ output "name" {
 }
 
 output "delivery_prefix" {
-  description = "Where AWS delivers: `<delivery_prefix>/data/BILLING_PERIOD=YYYY-MM/<timestamp>-<execution-id>/` and `<delivery_prefix>/metadata/BILLING_PERIOD=YYYY-MM/Manifest.json`."
+  description = "Where AWS delivers: `<delivery_prefix>/data/billing_period=YYYY-MM/<timestamp>-<execution-id>/` and `<delivery_prefix>/metadata/billing_period=YYYY-MM/Manifest.json`."
   value       = "${var.prefix}/${var.name}"
 }

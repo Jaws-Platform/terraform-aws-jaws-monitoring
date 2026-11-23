@@ -73,8 +73,8 @@ schema.
 s3://<bucket>/
   raw/                                     # what each provider delivered; never deleted
     provider=aws/source=data-exports/      #   AWS writes its own layout below this prefix:
-                                           #   <export-name>/data/BILLING_PERIOD=YYYY-MM/<timestamp>-<execution-id>/…
-                                           #   <export-name>/metadata/BILLING_PERIOD=YYYY-MM/Manifest.json
+                                           #   <export-name>/data/billing_period=YYYY-MM/<timestamp>-<execution-id>/…
+                                           #   <export-name>/metadata/billing_period=YYYY-MM/Manifest.json
     provider=<p>/source=<s>/…              #   any other source, in key=value folders
   normalized/                              # the normalizer's output; rebuildable from raw/
     schema=focus-1.2/provider=<p>/billing_period=YYYY-MM/data.parquet

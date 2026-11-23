@@ -9,7 +9,7 @@ one that runs the monitoring platform.
  ┌─────────────────────────────┐            ┌────────────────────────────────────────────┐
  │ aws-billing-export          │  delivers  │ billing-bucket: acme-billing                │
  │ acme-focus-daily (DAILY)    │ ─────────► │ raw/provider=aws/source=data-exports/       │
- └─────────────────────────────┘            │   acme-focus-daily/data/BILLING_PERIOD=…/   │
+ └─────────────────────────────┘            │   acme-focus-daily/data/billing_period=…/   │
                                             └────────────────────────────────────────────┘
 ```
 

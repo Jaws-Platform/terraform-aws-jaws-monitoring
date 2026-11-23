@@ -59,8 +59,8 @@ CONFIG = Config(
 )
 
 
-def add_aws_delivery(store, execution_id, cost=1.5, last_modified=None):
-    data = f"{AWS}/data/BILLING_PERIOD=2026-11/20261121T000000-{execution_id}/acme-focus-daily-00001.snappy.parquet"
+def add_aws_delivery(store, execution_id, cost=1.5, last_modified=None, folder="BILLING_PERIOD"):
+    data = f"{AWS}/data/{folder}=2026-11/20261121T000000-{execution_id}/acme-focus-daily-00001.snappy.parquet"
     store.add(data, parquet_bytes([{
         "ProviderName": "AWS", "PublisherName": "AWS", "BillingAccountId": "111111111111", "SubAccountId": "222222222222",
         "BillingPeriodStart": datetime(2026, 11, 1, tzinfo=UTC), "ChargePeriodStart": datetime(2026, 11, 20, tzinfo=UTC),
@@ -69,7 +69,7 @@ def add_aws_delivery(store, execution_id, cost=1.5, last_modified=None):
         "Tags": [("user:Project", "braveheart")],
     }], AWS_FIXTURE))
     manifest = {"executionId": execution_id, "dataFiles": [f"s3://{BUCKET}/{data}"]}
-    store.add(f"{AWS}/metadata/BILLING_PERIOD=2026-11/Manifest.json", json.dumps(manifest).encode(),
+    store.add(f"{AWS}/metadata/{folder}=2026-11/Manifest.json", json.dumps(manifest).encode(),
               last_modified=last_modified)
 
 
@@ -183,6 +183,26 @@ class RunTest(unittest.TestCase):
 
         self.assertEqual(store.puts, RECORDS)
         self.assertEqual((record["status"], record["outputs"], record["errors"]), ("ok", [], []))
+
+    def test_a_lowercase_aws_delivery_is_normalized(self):
+        store = FakeStore()
+        add_aws_delivery(store, "e1", folder="billing_period")
+
+        record = run(store, CONFIG, NOW)
+
+        self.assertIn(AWS_KEY, store.puts)
+        self.assertEqual((record["status"], record["errors"], record["warnings"]), ("ok", [], []))
+
+    def test_an_aws_folder_layout_without_billing_periods_is_a_warning(self):
+        store = FakeStore()
+        store.add(f"{AWS}/metadata/period=2026-11/acme-focus-daily-Manifest.json", b"{}")
+
+        record = run(store, CONFIG, NOW)
+
+        self.assertEqual((record["status"], record["outputs"], record["errors"]), ("ok", [], []))
+        self.assertEqual(record["warnings"], [
+            f"aws: no billing-period manifest matched under {AWS}/metadata/ (1 object there); check the export's folder layout",
+        ])
 
     def test_one_provider_failing_still_builds_the_others_and_raises(self):
         store = seeded_store()

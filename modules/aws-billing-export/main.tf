@@ -7,8 +7,8 @@
 #
 # Every refresh is written to new files (CREATE_NEW_REPORT):
 #
-#   <prefix>/<name>/data/BILLING_PERIOD=YYYY-MM/<timestamp>-<execution-id>/<name>-00001.snappy.parquet
-#   <prefix>/<name>/metadata/BILLING_PERIOD=YYYY-MM/Manifest.json   (always the newest execution)
+#   <prefix>/<name>/data/billing_period=YYYY-MM/<timestamp>-<execution-id>/<name>-00001.snappy.parquet
+#   <prefix>/<name>/metadata/billing_period=YYYY-MM/Manifest.json   (always the newest execution)
 #
 # AWS refreshes the current month at least daily and may restate the previous
 # month for two weeks after it ends; nothing already delivered is overwritten.

@@ -2,10 +2,12 @@
 newest delivery and map its rows to the normalized FOCUS table.
 
 Under the export's delivery prefix AWS writes
-  data/BILLING_PERIOD=YYYY-MM/<timestamp>-<execution-id>/<export>-00001.snappy.parquet
-  metadata/BILLING_PERIOD=YYYY-MM/…Manifest.json
+  data/billing_period=YYYY-MM/<timestamp>-<execution-id>/<export>-00001.snappy.parquet
+  metadata/billing_period=YYYY-MM/…Manifest.json
 and a period's newest manifest, written after all of its data files, names
-the files of the newest execution.
+the files of the newest execution. FOCUS 1.2 exports name the folder in
+lowercase; AWS's docs show BILLING_PERIOD=, so the folder name matches in
+either case.
 """
 
 import json
@@ -17,7 +19,7 @@ from .schema import FOCUS_BASE_COLUMNS, promoted_column
 from .store import ObjectInfo, Store
 from .tags import promote
 
-_PERIOD = re.compile(r"/BILLING_PERIOD=(\d{4}-\d{2})/")
+_PERIOD = re.compile(r"/billing_period=(\d{4}-\d{2})/", re.IGNORECASE)
 
 
 @dataclass(frozen=True)

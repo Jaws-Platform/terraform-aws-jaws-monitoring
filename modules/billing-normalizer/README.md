@@ -75,7 +75,7 @@ by the run that built it.
 ## What it reads
 
 **AWS** (`aws`): an AWS Data Export of `FOCUS_1_2_AWS` (`aws-billing-export`).
-For each `metadata/BILLING_PERIOD=YYYY-MM/` folder under `delivery_prefix`, the
+For each `metadata/billing_period=YYYY-MM/` folder under `delivery_prefix`, the
 newest `…Manifest.json` names the data files of the newest execution. Rows
 whose `PublisherName` is in `exclude_publishers` are dropped.
 
